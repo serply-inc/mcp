@@ -1,0 +1,14 @@
+services:
+  serply-mcp:
+    build:
+      context: .
+      target: builder
+    volumes:
+      - ./src:/app/src:ro
+    environment:
+      LOG_FORMAT: console
+      LOG_LEVEL: DEBUG
+      MCP_TRANSPORT: http
+    ports:
+      - "8000:8000"
+    read_only: false
