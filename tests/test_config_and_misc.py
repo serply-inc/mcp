@@ -44,10 +44,10 @@ def test_get_settings_returns_settings(monkeypatch):
     assert s.mcp_transport == "stdio"
 
 
-def test_get_settings_missing_api_key(monkeypatch):
+def test_get_settings_missing_api_key_returns_empty(monkeypatch):
     monkeypatch.delenv("SERPLY_API_KEY", raising=False)
-    with pytest.raises(RuntimeError, match="SERPLY_API_KEY"):
-        get_settings()
+    s = get_settings()
+    assert s.serply_api_key == ""
 
 
 # Errors
