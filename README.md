@@ -229,7 +229,7 @@ All configuration is via environment variables. No config file is required.
 |---|---|---|---|
 | `SERPLY_API_KEY` | Yes | — | Your Serply.io API key |
 | `MCP_TRANSPORT` | No | `stdio` | `stdio` (local) or `http` (Docker/remote) |
-| `MCP_AUTH_TOKEN` | For HTTP | — | Bearer token clients must send. Min 32 chars. Generate: `openssl rand -hex 32` |
+| `MCP_API_KEY` | For HTTP | — | Bearer token clients must send. Min 32 chars. Generate: `openssl rand -hex 32` |
 | `MCP_HTTP_HOST` | No | `0.0.0.0` | HTTP bind host |
 | `MCP_HTTP_PORT` | No | `8000` | HTTP bind port |
 | `MCP_HTTP_PATH` | No | `/mcp` | HTTP mount path |
@@ -261,7 +261,7 @@ Suitable for running as a persistent service accessible over a network.
 ```bash
 # 1. Set required environment variables
 export SERPLY_API_KEY=your-serply-api-key
-export MCP_AUTH_TOKEN=$(openssl rand -hex 32)
+export MCP_API_KEY=$(openssl rand -hex 32)
 
 # 2. Build and start
 docker compose up --build
@@ -304,10 +304,14 @@ The server listens on `http://127.0.0.1:8000/mcp`. Put a TLS-terminating reverse
 {
   "mcpServers": {
     "serply": {
-      "url": "https://your-server/mcp",
-      "headers": {
-        "Authorization": "Bearer your-mcp-auth-token"
-      }
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://mcp.serply.io/mcp",
+        "--header",
+        "Authorization: Bearer your-mcp-api-key"
+      ]
     }
   }
 }
@@ -345,10 +349,10 @@ claude mcp add serply \
 
 ## Security
 
-- **Bearer auth** — `MCP_AUTH_TOKEN` is required for HTTP transport. Tokens under 32 characters are rejected at startup. Comparison uses `secrets.compare_digest` (timing-safe).
+- **Bearer auth** — `MCP_API_KEY` is required for HTTP transport. Tokens under 32 characters are rejected at startup. Comparison uses `secrets.compare_digest` (timing-safe).
 - **SSRF protection** — `scrape_url` resolves hostnames before each request and rejects RFC 1918 private ranges, loopback, link-local (`169.254.x.x`), and CGNAT addresses. Controlled by `BLOCK_INTERNAL_URLS`.
 - **Rate limiting** — Per-token sliding-window limiter (in-memory). Default: 60 requests/minute.
-- **Secret handling** — `SERPLY_API_KEY` and `MCP_AUTH_TOKEN` are read from env only. Neither appears in any log line.
+- **Secret handling** — `SERPLY_API_KEY` and `MCP_API_KEY` are read from env only. Neither appears in any log line.
 - **Container hardening** — Runs as uid 10001, read-only root filesystem, all Linux capabilities dropped, `no-new-privileges`.
 - **TLS** — The server serves plain HTTP. Always terminate TLS at a reverse proxy when exposing beyond localhost.
 
@@ -360,12 +364,12 @@ claude mcp add serply \
 # Install all dependencies including dev tools
 uv sync --all-extras
 
-make test         # pytest with coverage
-make lint         # ruff check
-make type-check   # mypy --strict
-make format       # ruff format + autofix
-make build        # docker compose build
-make run          # docker compose up
+uv run pytest -q                        # run tests with coverage
+uv run ruff check src tests             # lint
+uv run mypy --strict src                # type check
+uv run ruff format src tests            # format
+docker compose build                    # build image
+docker compose up                       # start server
 ```
 
 Coverage target: 90% (currently ~98%).

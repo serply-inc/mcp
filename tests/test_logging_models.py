@@ -133,7 +133,7 @@ def test_settings_rejects_short_token():
         Settings(
             serply_api_key="key",
             mcp_transport="http",
-            mcp_auth_token="short",
+            mcp_api_key="short",
         )
 
 
@@ -143,14 +143,14 @@ def test_settings_rejects_http_without_token():
         Settings(
             serply_api_key="key",
             mcp_transport="http",
-            mcp_auth_token=None,
+            mcp_api_key=None,
         )
 
 
 def test_settings_allows_stdio_without_token():
     from serply_mcp.config import Settings
     s = Settings(serply_api_key="key", mcp_transport="stdio")
-    assert s.mcp_auth_token is None
+    assert s.mcp_api_key is None
 
 
 def test_settings_allows_exact_32_char_token():
@@ -158,9 +158,9 @@ def test_settings_allows_exact_32_char_token():
     s = Settings(
         serply_api_key="key",
         mcp_transport="http",
-        mcp_auth_token="a" * 32,
+        mcp_api_key="a" * 32,
     )
-    assert len(s.mcp_auth_token) == 32  # type: ignore[arg-type]
+    assert len(s.mcp_api_key) == 32  # type: ignore[arg-type]
 
 
 # errors.py

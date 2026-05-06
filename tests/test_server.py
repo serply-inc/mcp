@@ -51,7 +51,7 @@ def test_build_starlette_app_raises_without_token():
     settings = Settings(
         serply_api_key="k",
         mcp_transport="stdio",
-        mcp_auth_token=None,
+        mcp_api_key=None,
     )
     client = SerplyClient(settings)
     with pytest.raises((RuntimeError, Exception)):

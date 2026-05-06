@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 import secrets
 import socket
 import time
 from collections import deque
 
-import structlog
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-logger = structlog.get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class RateLimiter:
@@ -58,7 +58,6 @@ async def check_ssrf(url: str) -> None:
     if not hostname:
         raise ValueError("URL has no hostname")
     try:
-        # Resolve to get actual IP(s)
         infos = await _resolve(hostname)
     except OSError as exc:
         raise ValueError(f"Could not resolve hostname '{hostname}': {exc}") from exc
@@ -82,8 +81,8 @@ async def _resolve(hostname: str) -> list[str]:
     return [str(r[4][0]) for r in results]
 
 
-class BearerAuthMiddleware:
-    """ASGI middleware enforcing bearer-token auth on the MCP path."""
+class ApiKeyMiddleware:
+    """ASGI middleware enforcing X-Api-Key authentication on the MCP path."""
 
     def __init__(
         self,
@@ -104,32 +103,28 @@ class BearerAuthMiddleware:
 
         path: str = scope.get("path", "")
 
-        # Health check is exempt
         if path == "/healthz":
             await self._app(scope, receive, send)
             return
 
-        # Only enforce on MCP path
         if not path.startswith(self._mcp_path):
             await self._app(scope, receive, send)
             return
 
         request = Request(scope, receive)
-        auth_header = request.headers.get("authorization", "")
+        provided_token = request.headers.get("x-api-key", "")
 
-        if not auth_header.lower().startswith("bearer "):
+        if not provided_token:
             await self._send_401(send, scope)
             return
 
-        provided_token = auth_header[7:]  # strip "Bearer "
-
         if not secrets.compare_digest(provided_token.encode(), self._token.encode()):
-            logger.warning("auth_failed", reason="invalid_token")
+            logger.warning("auth failed: invalid api key")
             await self._send_401(send, scope)
             return
 
         if not self._rate_limiter.is_allowed(provided_token):
-            logger.warning("rate_limit_exceeded")
+            logger.warning("rate limit exceeded")
             await self._send_429(send, scope)
             return
 
@@ -140,7 +135,7 @@ class BearerAuthMiddleware:
         response = JSONResponse(
             {"error": "Unauthorized"},
             status_code=401,
-            headers={"WWW-Authenticate": "Bearer"},
+            headers={"WWW-Authenticate": "ApiKey"},
         )
         await response(scope, {}, send)  # type: ignore[arg-type]
 

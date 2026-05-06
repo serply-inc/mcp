@@ -14,16 +14,16 @@ class Settings:
     mcp_http_host: str = "0.0.0.0"
     mcp_http_port: int = 8000
     mcp_http_path: str = "/mcp"
-    mcp_auth_token: str | None = None
+    mcp_api_key: str | None = None
     mcp_rate_limit_per_minute: int = 60
     block_internal_urls: bool = True
     log_level: str = "INFO"
 
     def __post_init__(self) -> None:
-        if self.mcp_auth_token is not None and len(self.mcp_auth_token) < 32:
-            raise ValueError("mcp_auth_token must be at least 32 characters")
-        if self.mcp_transport == "http" and not self.mcp_auth_token:
-            raise ValueError("mcp_auth_token is required when mcp_transport='http'")
+        if self.mcp_api_key is not None and len(self.mcp_api_key) < 32:
+            raise ValueError("mcp_api_key must be at least 32 characters")
+        if self.mcp_transport == "http" and not self.mcp_api_key:
+            raise ValueError("mcp_api_key is required when mcp_transport='http'")
 
 
 def get_settings() -> Settings:
@@ -32,12 +32,12 @@ def get_settings() -> Settings:
         raise RuntimeError("SERPLY_API_KEY environment variable is required")
 
     transport = os.environ.get("MCP_TRANSPORT", "stdio")
-    auth_token = os.environ.get("MCP_AUTH_TOKEN") or None
+    mcp_api_key = os.environ.get("MCP_API_KEY") or None
 
-    if transport == "http" and not auth_token:
-        raise RuntimeError("MCP_AUTH_TOKEN is required when MCP_TRANSPORT=http")
-    if auth_token and len(auth_token) < 32:
-        raise RuntimeError("MCP_AUTH_TOKEN must be at least 32 characters")
+    if transport == "http" and not mcp_api_key:
+        raise RuntimeError("MCP_API_KEY is required when MCP_TRANSPORT=http")
+    if mcp_api_key and len(mcp_api_key) < 32:
+        raise RuntimeError("MCP_API_KEY must be at least 32 characters")
 
     return Settings(
         serply_api_key=api_key,
@@ -48,7 +48,7 @@ def get_settings() -> Settings:
         mcp_http_host=os.environ.get("MCP_HTTP_HOST", "0.0.0.0"),
         mcp_http_port=int(os.environ.get("MCP_HTTP_PORT", "8000")),
         mcp_http_path=os.environ.get("MCP_HTTP_PATH", "/mcp"),
-        mcp_auth_token=auth_token,
+        mcp_api_key=mcp_api_key,
         mcp_rate_limit_per_minute=int(os.environ.get("MCP_RATE_LIMIT_PER_MINUTE", "60")),
         block_internal_urls=os.environ.get("BLOCK_INTERNAL_URLS", "true").lower() == "true",
         log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),

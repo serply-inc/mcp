@@ -26,7 +26,7 @@ from serply_mcp.models import (
 
 def test_settings_token_too_short_rejected():
     with pytest.raises(ValueError):
-        Settings(serply_api_key="k", mcp_transport="http", mcp_auth_token="short")
+        Settings(serply_api_key="k", mcp_transport="http", mcp_api_key="short")
 
 
 def test_settings_http_requires_token():
@@ -36,7 +36,7 @@ def test_settings_http_requires_token():
 
 def test_settings_stdio_no_token_ok():
     s = Settings(serply_api_key="k", mcp_transport="stdio")
-    assert s.mcp_auth_token is None
+    assert s.mcp_api_key is None
     assert s.serply_base_url == "https://api.serply.io"
 
 
@@ -44,9 +44,9 @@ def test_settings_token_exactly_32_chars_ok():
     s = Settings(
         serply_api_key="k",
         mcp_transport="http",
-        mcp_auth_token="x" * 32,
+        mcp_api_key="x" * 32,
     )
-    assert s.mcp_auth_token == "x" * 32
+    assert s.mcp_api_key == "x" * 32
 
 
 def test_get_settings_returns_settings(monkeypatch):
