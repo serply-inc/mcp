@@ -6,9 +6,9 @@ services:
     container_name: serply-mcp
     restart: unless-stopped
     environment:
-      # Fallback key used for stdio transport or when no per-request key is provided.
-      # In HTTP mode the caller's X-Api-Key header is used instead.
-      SERPLY_API_KEY: ${SERPLY_API_KEY:?SERPLY_API_KEY is required}
+      # Optional fallback for stdio transport. In HTTP mode each caller
+      # supplies their own Serply key via X-Api-Key — this is not required.
+      SERPLY_API_KEY: ${SERPLY_API_KEY:-}
       MCP_TRANSPORT: http
       MCP_HTTP_HOST: 0.0.0.0
       MCP_HTTP_PORT: "8000"

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 @dataclass
 class Settings:
-    serply_api_key: str
+    serply_api_key: str = ""
     serply_base_url: str = "https://api.serply.io"
     serply_timeout_seconds: float = 30.0
     serply_max_retries: int = 3
@@ -20,12 +20,8 @@ class Settings:
 
 
 def get_settings() -> Settings:
-    api_key = os.environ.get("SERPLY_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("SERPLY_API_KEY environment variable is required")
-
     return Settings(
-        serply_api_key=api_key,
+        serply_api_key=os.environ.get("SERPLY_API_KEY", ""),
         serply_base_url=os.environ.get("SERPLY_BASE_URL", "https://api.serply.io"),
         serply_timeout_seconds=float(os.environ.get("SERPLY_TIMEOUT_SECONDS", "30")),
         serply_max_retries=int(os.environ.get("SERPLY_MAX_RETRIES", "3")),
