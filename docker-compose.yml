@@ -1,19 +1,18 @@
 services:
-  serply-mcp:
+
+  mcp:
     build: .
     image: serply-mcp-server:latest
     container_name: serply-mcp
     restart: unless-stopped
     environment:
+      # Fallback key used for stdio transport or when no per-request key is provided.
+      # In HTTP mode the caller's X-Api-Key header is used instead.
       SERPLY_API_KEY: ${SERPLY_API_KEY:?SERPLY_API_KEY is required}
-      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:?MCP_AUTH_TOKEN is required}
       MCP_TRANSPORT: http
       MCP_HTTP_HOST: 0.0.0.0
       MCP_HTTP_PORT: "8000"
       LOG_LEVEL: INFO
-      LOG_FORMAT: json
-    ports:
-      - "127.0.0.1:8000:8000"
     read_only: true
     tmpfs:
       - /tmp
@@ -30,3 +29,31 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+    networks:
+      - internal
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: serply-nginx
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - ./nginx/default.conf.template:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      mcp:
+        condition: service_healthy
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge

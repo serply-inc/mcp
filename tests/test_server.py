@@ -47,17 +47,6 @@ async def test_healthz_returns_ok():
     assert resp.json() == {"status": "ok"}
 
 
-def test_build_starlette_app_raises_without_token():
-    settings = Settings(
-        serply_api_key="k",
-        mcp_transport="stdio",
-        mcp_api_key=None,
-    )
-    client = SerplyClient(settings)
-    with pytest.raises((RuntimeError, Exception)):
-        build_starlette_app(settings, client)
-
-
 @pytest.mark.asyncio
 async def test_build_starlette_app_creates_valid_asgi(test_settings):
     import httpx
@@ -73,7 +62,7 @@ async def test_build_starlette_app_creates_valid_asgi(test_settings):
 
 
 @pytest.mark.asyncio
-async def test_mcp_path_requires_auth(test_settings):
+async def test_mcp_path_requires_key(test_settings):
     import httpx
 
     client = SerplyClient(test_settings)

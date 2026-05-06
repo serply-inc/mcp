@@ -24,29 +24,16 @@ from serply_mcp.models import (
 
 # Settings
 
-def test_settings_token_too_short_rejected():
-    with pytest.raises(ValueError):
-        Settings(serply_api_key="k", mcp_transport="http", mcp_api_key="short")
-
-
-def test_settings_http_requires_token():
-    with pytest.raises(ValueError):
-        Settings(serply_api_key="k", mcp_transport="http")
-
-
-def test_settings_stdio_no_token_ok():
-    s = Settings(serply_api_key="k", mcp_transport="stdio")
-    assert s.mcp_api_key is None
+def test_settings_defaults():
+    s = Settings(serply_api_key="k")
+    assert s.mcp_transport == "stdio"
     assert s.serply_base_url == "https://api.serply.io"
+    assert s.block_internal_urls is True
 
 
-def test_settings_token_exactly_32_chars_ok():
-    s = Settings(
-        serply_api_key="k",
-        mcp_transport="http",
-        mcp_api_key="x" * 32,
-    )
-    assert s.mcp_api_key == "x" * 32
+def test_settings_http_transport():
+    s = Settings(serply_api_key="k", mcp_transport="http")
+    assert s.mcp_transport == "http"
 
 
 def test_get_settings_returns_settings(monkeypatch):

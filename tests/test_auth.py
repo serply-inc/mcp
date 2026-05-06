@@ -5,7 +5,7 @@ import unittest.mock as mock
 import httpx
 import pytest
 
-from serply_mcp.auth import ApiKeyMiddleware, RateLimiter, check_ssrf
+from serply_mcp.auth import PassthroughKeyMiddleware, RateLimiter, check_ssrf
 
 # RateLimiter
 
@@ -139,7 +139,7 @@ async def test_check_ssrf_resolve_real_localhost():
     assert any(a in ("127.0.0.1", "::1") for a in addrs)
 
 
-# ApiKeyMiddleware
+# PassthroughKeyMiddleware
 
 async def _ok_app(scope, receive, send):
     await send({"type": "http.response.start", "status": 200, "headers": []})
@@ -149,7 +149,7 @@ async def _ok_app(scope, receive, send):
 @pytest.mark.asyncio
 async def test_middleware_allows_health_check():
     rl = RateLimiter(60)
-    app = ApiKeyMiddleware(_ok_app, token="x" * 32, mcp_path="/mcp", rate_limiter=rl)
+    app = PassthroughKeyMiddleware(_ok_app, mcp_path="/mcp", rate_limiter=rl)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         resp = await c.get("/healthz")
@@ -159,7 +159,7 @@ async def test_middleware_allows_health_check():
 @pytest.mark.asyncio
 async def test_middleware_passes_through_non_mcp_paths():
     rl = RateLimiter(60)
-    app = ApiKeyMiddleware(_ok_app, token="x" * 32, mcp_path="/mcp", rate_limiter=rl)
+    app = PassthroughKeyMiddleware(_ok_app, mcp_path="/mcp", rate_limiter=rl)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         resp = await c.get("/something-else")
@@ -167,50 +167,65 @@ async def test_middleware_passes_through_non_mcp_paths():
 
 
 @pytest.mark.asyncio
-async def test_middleware_rejects_missing_api_key():
+async def test_middleware_rejects_missing_key():
     rl = RateLimiter(60)
-    app = ApiKeyMiddleware(_ok_app, token="x" * 32, mcp_path="/mcp", rate_limiter=rl)
+    app = PassthroughKeyMiddleware(_ok_app, mcp_path="/mcp", rate_limiter=rl)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         resp = await c.post("/mcp")
     assert resp.status_code == 401
-    assert resp.headers.get("www-authenticate") == "ApiKey"
 
 
 @pytest.mark.asyncio
-async def test_middleware_rejects_wrong_api_key():
+async def test_middleware_accepts_x_api_key():
     rl = RateLimiter(60)
-    app = ApiKeyMiddleware(_ok_app, token="x" * 32, mcp_path="/mcp", rate_limiter=rl)
+    app = PassthroughKeyMiddleware(_ok_app, mcp_path="/mcp", rate_limiter=rl)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
-        resp = await c.post("/mcp", headers={"X-Api-Key": "wrong"})
-    assert resp.status_code == 401
+        resp = await c.post("/mcp", headers={"X-Api-Key": "any-serply-key"})
+    assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
-async def test_middleware_accepts_correct_api_key():
+async def test_middleware_accepts_bearer_token():
     rl = RateLimiter(60)
-    token = "x" * 32
-    app = ApiKeyMiddleware(_ok_app, token=token, mcp_path="/mcp", rate_limiter=rl)
+    app = PassthroughKeyMiddleware(_ok_app, mcp_path="/mcp", rate_limiter=rl)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
-        resp = await c.post("/mcp", headers={"X-Api-Key": token})
+        resp = await c.post("/mcp", headers={"Authorization": "Bearer any-serply-key"})
     assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
 async def test_middleware_rate_limits():
     rl = RateLimiter(2)
-    token = "x" * 32
-    app = ApiKeyMiddleware(_ok_app, token=token, mcp_path="/mcp", rate_limiter=rl)
+    app = PassthroughKeyMiddleware(_ok_app, mcp_path="/mcp", rate_limiter=rl)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
-        r1 = await c.post("/mcp", headers={"X-Api-Key": token})
-        r2 = await c.post("/mcp", headers={"X-Api-Key": token})
-        r3 = await c.post("/mcp", headers={"X-Api-Key": token})
+        r1 = await c.post("/mcp", headers={"X-Api-Key": "key"})
+        r2 = await c.post("/mcp", headers={"X-Api-Key": "key"})
+        r3 = await c.post("/mcp", headers={"X-Api-Key": "key"})
     assert r1.status_code == 200
     assert r2.status_code == 200
     assert r3.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_middleware_sets_context_var():
+    from serply_mcp.context import request_api_key
+    captured: list[str] = []
+
+    async def capture_app(scope, receive, send):
+        captured.append(request_api_key.get())
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"OK"})
+
+    rl = RateLimiter(60)
+    app = PassthroughKeyMiddleware(capture_app, mcp_path="/mcp", rate_limiter=rl)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        await c.post("/mcp", headers={"X-Api-Key": "my-serply-key"})
+    assert captured == ["my-serply-key"]
 
 
 @pytest.mark.asyncio
@@ -222,7 +237,7 @@ async def test_middleware_passes_lifespan_through():
         await send({"type": "lifespan.startup.complete"})
 
     rl = RateLimiter(60)
-    app = ApiKeyMiddleware(lifespan_app, token="x" * 32, mcp_path="/mcp", rate_limiter=rl)
+    app = PassthroughKeyMiddleware(lifespan_app, mcp_path="/mcp", rate_limiter=rl)
     sent = []
 
     async def receive():

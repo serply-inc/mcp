@@ -8,7 +8,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from serply_mcp.auth import ApiKeyMiddleware, RateLimiter
+from serply_mcp.auth import PassthroughKeyMiddleware, RateLimiter
 from serply_mcp.client import SerplyClient
 from serply_mcp.config import Settings
 from serply_mcp.tools import register_tools
@@ -38,16 +38,12 @@ async def healthz(_: Request) -> JSONResponse:
 
 
 def build_starlette_app(settings: Settings, client: SerplyClient) -> Starlette:
-    if not settings.mcp_api_key:
-        raise RuntimeError("MCP_API_KEY is required for HTTP transport")
-
     mcp = create_app(settings, client)
     mcp_asgi = mcp.streamable_http_app()
 
     rate_limiter = RateLimiter(settings.mcp_rate_limit_per_minute)
-    authed_mcp = ApiKeyMiddleware(
+    authed_mcp = PassthroughKeyMiddleware(
         app=mcp_asgi,
-        token=settings.mcp_api_key,
         mcp_path=settings.mcp_http_path,
         rate_limiter=rate_limiter,
     )

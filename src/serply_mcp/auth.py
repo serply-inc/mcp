@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-import secrets
 import socket
 import time
 from collections import deque
 
-from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -81,18 +79,24 @@ async def _resolve(hostname: str) -> list[str]:
     return [str(r[4][0]) for r in results]
 
 
-class ApiKeyMiddleware:
-    """ASGI middleware enforcing X-Api-Key authentication on the MCP path."""
+class PassthroughKeyMiddleware:
+    """Extract the caller's Serply API key and make it available for upstream calls.
+
+    Accepts the key via either:
+      - X-Api-Key: <key>
+      - Authorization: Bearer <key>
+
+    Returns 401 if no key is present. The extracted key is stored in a
+    ContextVar so SerplyClient can use it for the duration of the request.
+    """
 
     def __init__(
         self,
         app: ASGIApp,
-        token: str,
         mcp_path: str,
         rate_limiter: RateLimiter,
     ) -> None:
         self._app = app
-        self._token = token
         self._mcp_path = mcp_path.rstrip("/")
         self._rate_limiter = rate_limiter
 
@@ -103,39 +107,38 @@ class ApiKeyMiddleware:
 
         path: str = scope.get("path", "")
 
-        if path == "/healthz":
+        if path == "/healthz" or not path.startswith(self._mcp_path):
             await self._app(scope, receive, send)
             return
 
-        if not path.startswith(self._mcp_path):
-            await self._app(scope, receive, send)
-            return
+        headers = dict(scope.get("headers", []))
+        key = headers.get(b"x-api-key", b"").decode().strip()
+        if not key:
+            auth = headers.get(b"authorization", b"").decode()
+            if auth.lower().startswith("bearer "):
+                key = auth[7:].strip()
 
-        request = Request(scope, receive)
-        provided_token = request.headers.get("x-api-key", "")
-
-        if not provided_token:
+        if not key:
             await self._send_401(send, scope)
             return
 
-        if not secrets.compare_digest(provided_token.encode(), self._token.encode()):
-            logger.warning("auth failed: invalid api key")
-            await self._send_401(send, scope)
-            return
-
-        if not self._rate_limiter.is_allowed(provided_token):
-            logger.warning("rate limit exceeded")
+        if not self._rate_limiter.is_allowed(key):
+            logger.warning("rate limit exceeded for key prefix=%s", key[:8])
             await self._send_429(send, scope)
             return
 
-        await self._app(scope, receive, send)
+        from serply_mcp.context import request_api_key
+        token = request_api_key.set(key)
+        try:
+            await self._app(scope, receive, send)
+        finally:
+            request_api_key.reset(token)
 
     @staticmethod
     async def _send_401(send: Send, scope: Scope) -> None:
         response = JSONResponse(
-            {"error": "Unauthorized"},
+            {"error": "Unauthorized — provide your Serply API key via X-Api-Key header"},
             status_code=401,
-            headers={"WWW-Authenticate": "ApiKey"},
         )
         await response(scope, {}, send)  # type: ignore[arg-type]
 

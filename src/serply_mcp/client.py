@@ -48,7 +48,9 @@ class SerplyClient:
         await self._client.aclose()
 
     def _auth_headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
-        headers: dict[str, str] = {"X-Api-Key": self._settings.serply_api_key}
+        from serply_mcp.context import request_api_key
+        key = request_api_key.get() or self._settings.serply_api_key
+        headers: dict[str, str] = {"X-Api-Key": key}
         if extra:
             headers.update(extra)
         return headers

@@ -12,7 +12,6 @@ def test_settings() -> Settings:
     return Settings(
         serply_api_key="test-api-key-1234567890",
         mcp_transport="http",
-        mcp_api_key="a" * 32,
         mcp_rate_limit_per_minute=60,
         block_internal_urls=True,
         log_level="DEBUG",

@@ -44,7 +44,6 @@ def test_main_http_dispatch(monkeypatch):
     fake_settings = Settings(
         serply_api_key="k",
         mcp_transport="http",
-        mcp_api_key="z" * 32,
     )
     monkeypatch.setattr(main_mod, "get_settings", lambda: fake_settings)
 

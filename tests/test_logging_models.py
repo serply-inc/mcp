@@ -127,40 +127,17 @@ def test_proxy_locations_tuple():
 
 # config.py edge cases
 
-def test_settings_rejects_short_token():
+def test_settings_created_with_api_key():
     from serply_mcp.config import Settings
-    with pytest.raises(ValueError, match="32"):
-        Settings(
-            serply_api_key="key",
-            mcp_transport="http",
-            mcp_api_key="short",
-        )
+    s = Settings(serply_api_key="key")
+    assert s.serply_api_key == "key"
+    assert s.mcp_transport == "stdio"
 
 
-def test_settings_rejects_http_without_token():
+def test_settings_http_transport_works():
     from serply_mcp.config import Settings
-    with pytest.raises(ValueError):
-        Settings(
-            serply_api_key="key",
-            mcp_transport="http",
-            mcp_api_key=None,
-        )
-
-
-def test_settings_allows_stdio_without_token():
-    from serply_mcp.config import Settings
-    s = Settings(serply_api_key="key", mcp_transport="stdio")
-    assert s.mcp_api_key is None
-
-
-def test_settings_allows_exact_32_char_token():
-    from serply_mcp.config import Settings
-    s = Settings(
-        serply_api_key="key",
-        mcp_transport="http",
-        mcp_api_key="a" * 32,
-    )
-    assert len(s.mcp_api_key) == 32  # type: ignore[arg-type]
+    s = Settings(serply_api_key="key", mcp_transport="http")
+    assert s.mcp_transport == "http"
 
 
 # errors.py
