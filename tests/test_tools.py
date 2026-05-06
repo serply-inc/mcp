@@ -21,9 +21,10 @@ def _make_mcp(test_settings, client):
     return mcp
 
 
-def _unwrap(result):
-    """Handle FastMCP call_tool returning dict or (content, structured) tuple."""
-    return result[1] if isinstance(result, tuple) else result
+def _unwrap(result) -> str:
+    """Extract the text content from a FastMCP call_tool result."""
+    content = result[0] if isinstance(result, tuple) else result
+    return content[0].text if content else ""
 
 
 # ── google_search ─────────────────────────────────────────────────────────────
@@ -38,8 +39,9 @@ async def test_google_search_path_and_headers(test_settings, mock_serply):
     async with SerplyClient(test_settings) as client:
         mcp = _make_mcp(test_settings, client)
         result = _unwrap(await mcp.call_tool("google_search", {"query": "hello world", "num": 5}))
-    assert len(result["results"]) == 1
-    assert result["answer"] == "42"
+    assert "A" in result
+    assert "https://a.com" in result
+    assert "42" in result
     assert "hello+world" in str(mock_serply.calls[0].request.url)
     assert mock_serply.calls[0].request.headers["x-api-key"] == "test-api-key-1234567890"
 
@@ -51,6 +53,15 @@ async def test_google_search_start_offset(test_settings, mock_serply):
         mcp = _make_mcp(test_settings, client)
         await mcp.call_tool("google_search", {"query": "test", "start": 20})
     assert "start=20" in str(mock_serply.calls[0].request.url)
+
+
+@pytest.mark.asyncio
+async def test_google_search_no_results(test_settings, mock_serply):
+    mock_serply.get(url__regex=r".*/v1/search/.*").mock(return_value=httpx.Response(200, json={"results": []}))
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("google_search", {"query": "test"}))
+    assert "No results" in result
 
 
 @pytest.mark.asyncio
@@ -68,14 +79,15 @@ async def test_google_search_tool_error_on_failure(test_settings, mock_serply):
 async def test_bing_search_path_and_response(test_settings, mock_serply):
     mock_serply.get(url__regex=r".*/v1/b/search/.*").mock(return_value=httpx.Response(200, json={
         "results": [{"title": "B", "link": "https://b.com", "description": "d"}],
-        "ads": [{"title": "Ad"}],
-        "shopping_ads": [],
+        "ads": [{"title": "Ad Title", "displayUrl": "example.com › ads", "content": "Buy now"}],
+        "shoppingAds": [],
     }))
     async with SerplyClient(test_settings) as client:
         mcp = _make_mcp(test_settings, client)
         result = _unwrap(await mcp.call_tool("bing_search", {"query": "bing test"}))
-    assert len(result["results"]) == 1
-    assert len(result["ads"]) == 1
+    assert "B" in result
+    assert "https://b.com" in result
+    assert "Ad Title" in result
     assert "bing+test" in str(mock_serply.calls[0].request.url)
 
 
@@ -90,19 +102,47 @@ async def test_bing_search_rate_limit_error(test_settings, mock_serply):
             await client.get("/v1/b/search/q=test")
 
 
+@pytest.mark.asyncio
+async def test_bing_search_shopping_ads(test_settings, mock_serply):
+    mock_serply.get(url__regex=r".*/v1/b/search/.*").mock(return_value=httpx.Response(200, json={
+        "results": [],
+        "ads": [],
+        "shoppingAds": [{"title": "Widget Pro", "price": "$9.99"}],
+    }))
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("bing_search", {"query": "widget"}))
+    assert "Widget Pro" in result
+    assert "$9.99" in result
+
+
 # ── google_video_search ───────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_google_video_search(test_settings, mock_serply):
     mock_serply.get(url__regex=r".*/v1/video/.*").mock(return_value=httpx.Response(200, json={
-        "results": [{"title": "V", "link": "https://youtube.com/v", "description": "d"}],
+        "results": [{"title": "Python Tutorial", "link": "https://youtube.com/v", "description": "Learn Python"}],
         "total": 1,
     }))
     async with SerplyClient(test_settings) as client:
         mcp = _make_mcp(test_settings, client)
         result = _unwrap(await mcp.call_tool("google_video_search", {"query": "python tutorial"}))
-    assert len(result["results"]) == 1
+    assert "Python Tutorial" in result
+    assert "youtube.com" in result
     assert "/v1/video/" in str(mock_serply.calls[0].request.url)
+
+
+@pytest.mark.asyncio
+async def test_google_video_url_clean(test_settings, mock_serply):
+    tracked = "https://www.youtube.com/watch%3Fv%3Dabc&sa=U&ved=XYZ&usg=ABC"
+    mock_serply.get(url__regex=r".*/v1/video/.*").mock(return_value=httpx.Response(200, json={
+        "results": [{"title": "V", "link": tracked}],
+    }))
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("google_video_search", {"query": "test"}))
+    assert "youtube.com/watch?v=abc" in result
+    assert "&sa=" not in result
 
 
 @pytest.mark.asyncio
@@ -117,20 +157,39 @@ async def test_google_video_tool_error(test_settings, mock_serply):
 # ── google_news_search ────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_google_news_search_basic(test_settings, mock_serply):
+async def test_google_news_search_top_level_entries(test_settings, mock_serply):
+    """Entries at top level (actual API response format)."""
     mock_serply.get(url__regex=r".*/v1/news/.*").mock(return_value=httpx.Response(200, json={
-        "feed": {"entries": [{"title": "N", "link": "https://news.com"}], "title": "feed"},
+        "feed": {"title": "Google News"},
+        "entries": [
+            {"title": "Big News", "link": "https://news.com/1", "published": "Mon, 05 May 2026",
+             "source": {"title": "Reuters"}},
+        ],
+    }))
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("google_news_search", {"query": "tech news"}))
+    assert "Big News" in result
+    assert "Reuters" in result
+    assert "https://news.com/1" in result
+
+
+@pytest.mark.asyncio
+async def test_google_news_search_nested_entries_fallback(test_settings, mock_serply):
+    """Fallback: entries nested inside feed object."""
+    mock_serply.get(url__regex=r".*/v1/news/.*").mock(return_value=httpx.Response(200, json={
+        "feed": {"entries": [{"title": "Nested News", "link": "https://news.com/2"}], "title": "feed"},
         "entities": [],
     }))
     async with SerplyClient(test_settings) as client:
         mcp = _make_mcp(test_settings, client)
         result = _unwrap(await mcp.call_tool("google_news_search", {"query": "tech news"}))
-    assert len(result["feed"]["entries"]) == 1
+    assert "Nested News" in result
 
 
 @pytest.mark.asyncio
 async def test_google_news_search_with_ceid(test_settings, mock_serply):
-    mock_serply.get(url__regex=r".*/v1/news/.*").mock(return_value=httpx.Response(200, json={"feed": {}, "entities": []}))
+    mock_serply.get(url__regex=r".*/v1/news/.*").mock(return_value=httpx.Response(200, json={"feed": {}, "entries": []}))
     async with SerplyClient(test_settings) as client:
         mcp = _make_mcp(test_settings, client)
         await mcp.call_tool("google_news_search", {"query": "brexit", "ceid": "GB:en"})
@@ -142,12 +201,21 @@ async def test_google_news_search_with_ceid(test_settings, mock_serply):
 @pytest.mark.asyncio
 async def test_google_jobs_search(test_settings, mock_serply):
     mock_serply.get(url__regex=r".*/v1/job/search/.*").mock(return_value=httpx.Response(200, json={
-        "jobs": [{"position": "Engineer", "link": "https://jobs.com"}],
+        "jobs": [{
+            "position": "Python Engineer",
+            "link": "https://jobs.com/1",
+            "description": {"employer": "Acme", "is_remote": True, "perks": []},
+            "highlights": ["5+ years Python"],
+            "metadata": {"location": "New York"},
+        }],
     }))
     async with SerplyClient(test_settings) as client:
         mcp = _make_mcp(test_settings, client)
         result = _unwrap(await mcp.call_tool("google_jobs_search", {"query": "python engineer"}))
-    assert len(result["jobs"]) == 1
+    assert "Python Engineer" in result
+    assert "Acme" in result
+    assert "Remote" in result
+    assert "https://jobs.com/1" in result
 
 
 @pytest.mark.asyncio
@@ -164,13 +232,15 @@ async def test_google_jobs_tool_error(test_settings, mock_serply):
 @pytest.mark.asyncio
 async def test_google_scholar_search(test_settings, mock_serply):
     mock_serply.get(url__regex=r".*/v1/scholar/.*").mock(return_value=httpx.Response(200, json={
-        "results": [{"title": "Paper", "link": "https://scholar.google.com"}],
+        "results": [{"title": "Attention Is All You Need", "link": "https://arxiv.org/abs/1706.03762", "description": "Vaswani et al. 2017"}],
         "total": 1,
     }))
     async with SerplyClient(test_settings) as client:
         mcp = _make_mcp(test_settings, client)
         result = _unwrap(await mcp.call_tool("google_scholar_search", {"query": "transformer attention"}))
-    assert len(result["results"]) == 1
+    assert "Attention Is All You Need" in result
+    assert "arxiv.org" in result
+    assert "Vaswani" in result
 
 
 @pytest.mark.asyncio
@@ -185,16 +255,44 @@ async def test_google_scholar_tool_error(test_settings, mock_serply):
 # ── amazon_product_search ─────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_amazon_product_search(test_settings, mock_serply):
+async def test_amazon_product_search_products_key(test_settings, mock_serply):
+    """API returns products under 'products' key."""
     mock_serply.get(url__regex=r".*/v1/product/search/.*").mock(return_value=httpx.Response(200, json={
-        "products": [{"title": "Widget", "price": "$9.99", "asin": "B001"}],
+        "products": [{"title": "Widget", "price": "$9.99", "asin": "B001", "rating_stars": 4.5, "review_count": 100}],
         "ads": [],
     }))
     async with SerplyClient(test_settings) as client:
         mcp = _make_mcp(test_settings, client)
         result = _unwrap(await mcp.call_tool("amazon_product_search", {"query": "usb cable"}))
-    assert len(result["products"]) == 1
-    assert result["products"][0]["asin"] == "B001"
+    assert "Widget" in result
+    assert "$9.99" in result
+    assert "B001" in result
+    assert "4.5" in result
+
+
+@pytest.mark.asyncio
+async def test_amazon_product_search_results_key(test_settings, mock_serply):
+    """API returns products under 'results' key (actual API response format)."""
+    mock_serply.get(url__regex=r".*/v1/product/search/.*").mock(return_value=httpx.Response(200, json={
+        "results": [{"title": "Cable", "price": "$4.99", "asin": "B002", "prime": True}],
+    }))
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("amazon_product_search", {"query": "cable"}))
+    assert "Cable" in result
+    assert "$4.99" in result
+    assert "Prime" in result
+
+
+@pytest.mark.asyncio
+async def test_amazon_product_search_empty(test_settings, mock_serply):
+    mock_serply.get(url__regex=r".*/v1/product/search/.*").mock(return_value=httpx.Response(200, json={
+        "results": [], "total": 0,
+    }))
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("amazon_product_search", {"query": "test"}))
+    assert "No products" in result
 
 
 @pytest.mark.asyncio
@@ -219,9 +317,10 @@ async def test_scrape_url_markdown(test_settings, mock_serply):
         async with SerplyClient(test_settings) as client:
             mcp = _make_mcp(test_settings, client)
             result = _unwrap(await mcp.call_tool("scrape_url", {"url": "https://example.com"}))
-    assert result["content"].startswith("# Hello")
-    assert "content_hash" in result
-    assert result["content_length"] == len("# Hello\n\nWorld")
+    assert "# Hello" in result
+    assert "World" in result
+    assert "example.com" in result
+    assert "sha256:" in result
 
 
 @pytest.mark.asyncio
@@ -269,7 +368,7 @@ async def test_scrape_url_ssrf_disabled(test_settings, mock_serply):
     async with SerplyClient(settings_no_ssrf) as client:
         mcp = _make_mcp(settings_no_ssrf, client)
         result = _unwrap(await mcp.call_tool("scrape_url", {"url": "http://127.0.0.1/"}))
-    assert result["content"] == "ok"
+    assert "ok" in result
 
 
 @pytest.mark.asyncio

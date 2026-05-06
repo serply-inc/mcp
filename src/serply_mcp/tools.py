@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import urllib.parse
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
@@ -20,15 +20,21 @@ ProxyLocation = Literal[
 Device = Literal["desktop", "mobile"]
 
 
+def _clean_url(url: str) -> str:
+    """Decode percent-encoding and strip Bing/Google tracking parameters."""
+    decoded = urllib.parse.unquote(url)
+    for marker in ("&sa=", "&ved=", "&usg=", "&ntb=", "!&&p="):
+        idx = decoded.find(marker)
+        if idx != -1:
+            decoded = decoded[:idx]
+    return decoded
+
+
 def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> None:
     """Register all 8 Serply tools and the account/usage resource on *mcp*."""
 
-    # ── helpers ──────────────────────────────────────────────────────────────
-
     def _headers(proxy_location: str, device: str) -> dict[str, str]:
         return {"X-Proxy-Location": proxy_location, "X-User-Agent": device}
-
-    # ── tools ─────────────────────────────────────────────────────────────────
 
     @mcp.tool()
     async def google_search(
@@ -37,21 +43,15 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
         start: Annotated[int, Field(ge=0, description="Zero-based result offset for pagination.")] = 0,
         proxy_location: Annotated[ProxyLocation, Field(description="Country from which the search is issued.")] = "US",
         device: Annotated[Device, Field(description="Emulated device type — affects ranking and snippets.")] = "desktop",
-    ) -> dict[str, Any]:
+    ) -> str:
         """Search Google and return organic results via the Serply API.
 
         Use this tool whenever you need current, real-world information from the web:
         factual lookups, recent events, product research, technical documentation,
         code examples, or anything that benefits from live Google results.
 
-        Returns up to `num` organic results, each with:
-        - title  — page headline
-        - link   — canonical URL
-        - description — snippet shown in the SERP
-
-        Also includes a top-level `answer` field when Google surfaces a direct answer
-        box (e.g. a definition, calculation, or featured snippet), and `total` with the
-        estimated total result count.
+        Returns up to `num` organic results, each with title, URL, and snippet.
+        Also includes a direct answer when Google surfaces a featured snippet.
 
         Use `start` + `num` to paginate: start=0 is page 1, start=10 is page 2, etc.
         Use `proxy_location` to get geo-specific results (e.g. "GB" for UK results).
@@ -60,12 +60,31 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
             path = SerplyClient.build_query_path("/v1/search", query, num=num, start=start or None)
             data = await client.get(path, extra_headers=_headers(proxy_location, device))
             results = data.get("results", [])
-            return {
-                "results": results,
-                "total": data.get("total"),
-                "answer": data.get("answer"),
-                "summary": f"Found {len(results)} Google results for '{query}'",
-            }
+
+            lines: list[str] = []
+            total = data.get("total")
+            header = f'{len(results)} results for "{query}"'
+            if total:
+                header += f" (est. {total:,} total)"
+            lines.append(header)
+
+            answer = data.get("answer") or (data.get("answers") or [None])[0]
+            if answer:
+                lines.append(f"\nAnswer: {answer}")
+
+            for i, r in enumerate(results, 1):
+                title = (r.get("title") or "").strip()
+                link = r.get("link", "")
+                desc = (r.get("description") or "").strip()
+                lines.append(f"\n{i}. {title}")
+                lines.append(f"   {link}")
+                if desc:
+                    lines.append(f"   {desc}")
+
+            if not results:
+                lines.append("\nNo results found.")
+
+            return "\n".join(lines)
         except SerplyError as exc:
             raise ToolError(str(exc)) from exc
 
@@ -74,33 +93,56 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
         query: Annotated[str, Field(description="The search query string.", max_length=2048)],
         proxy_location: Annotated[ProxyLocation, Field(description="Country from which the search is issued.")] = "US",
         device: Annotated[Device, Field(description="Emulated device type.")] = "desktop",
-    ) -> dict[str, Any]:
+    ) -> str:
         """Search Bing and return organic results, ads, and shopping ads via Serply.
 
         Use this tool as a complement to `google_search` when you want:
         - A second opinion on search results from a different index
         - Shopping/product results — Bing surfaces more shopping ads than Google
         - Bing-specific ranking or freshness signals
-
-        Returns:
-        - results       — organic web results (title, link, description)
-        - ads           — sponsored text ads
-        - shopping_ads  — product-level shopping ads with prices and images
-        - location      — inferred user location used by Bing
         """
         try:
             path = SerplyClient.build_query_path("/v1/b/search", query)
             data = await client.get(path, extra_headers=_headers(proxy_location, device))
             results = data.get("results", [])
             ads = data.get("ads", [])
-            shopping_ads = data.get("shopping_ads", [])
-            return {
-                "results": results,
-                "ads": ads,
-                "shopping_ads": shopping_ads,
-                "location": data.get("location"),
-                "summary": f"Found {len(results)} Bing results, {len(ads)} ads, {len(shopping_ads)} shopping ads for '{query}'",
-            }
+            shopping = data.get("shoppingAds", data.get("shopping_ads", []))
+
+            lines: list[str] = [f'{len(results)} results for "{query}"']
+
+            for i, r in enumerate(results, 1):
+                title = (r.get("title") or "").strip()
+                link = _clean_url(r.get("link", ""))
+                desc = (r.get("description") or "").strip()
+                lines.append(f"\n{i}. {title}")
+                lines.append(f"   {link}")
+                if desc:
+                    lines.append(f"   {desc}")
+
+            if not results:
+                lines.append("\nNo organic results found.")
+
+            if ads:
+                lines.append(f"\nAds ({len(ads)}):")
+                for ad in ads:
+                    title = (ad.get("title") or "").strip()
+                    domain = ad.get("displayUrl", "").split("›")[0].strip()
+                    content = (ad.get("content") or "").strip()
+                    ad_line = f"- {title}"
+                    if domain:
+                        ad_line += f" ({domain})"
+                    if content:
+                        ad_line += f" — {content}"
+                    lines.append(ad_line)
+
+            if shopping:
+                lines.append(f"\nShopping ({len(shopping)}):")
+                for item in shopping[:5]:
+                    title = (item.get("title") or item.get("name") or "").strip()
+                    price = item.get("price", "")
+                    lines.append(f"- {title}" + (f" — {price}" if price else ""))
+
+            return "\n".join(lines)
         except SerplyError as exc:
             raise ToolError(str(exc)) from exc
 
@@ -110,7 +152,7 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
         num: Annotated[int, Field(ge=1, le=100, description="Number of video results.")] = 10,
         proxy_location: Annotated[ProxyLocation, Field(description="Country context for the search.")] = "US",
         device: Annotated[Device, Field(description="Emulated device type.")] = "desktop",
-    ) -> dict[str, Any]:
+    ) -> str:
         """Search Google Videos and return video results via Serply.
 
         Use this tool when the user is looking for video content: tutorials,
@@ -118,21 +160,27 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
         are more relevant than web pages.
 
         Results come primarily from YouTube and other indexed video platforms.
-        Each result includes:
-        - title       — video title
-        - link        — URL to the video
-        - description — snippet or channel info
         """
         try:
             path = SerplyClient.build_query_path("/v1/video", query, num=num)
             data = await client.get(path, extra_headers=_headers(proxy_location, device))
             results = data.get("results", [])
-            return {
-                "results": results,
-                "total": data.get("total"),
-                "answer": data.get("answer"),
-                "summary": f"Found {len(results)} video results for '{query}'",
-            }
+
+            lines: list[str] = [f'{len(results)} video results for "{query}"']
+
+            for i, r in enumerate(results, 1):
+                title = (r.get("title") or "").strip()
+                link = _clean_url(r.get("link", ""))
+                desc = (r.get("description") or "").strip()
+                lines.append(f"\n{i}. {title}")
+                lines.append(f"   {link}")
+                if desc:
+                    lines.append(f"   {desc}")
+
+            if not results:
+                lines.append("\nNo video results found.")
+
+            return "\n".join(lines)
         except SerplyError as exc:
             raise ToolError(str(exc)) from exc
 
@@ -142,8 +190,8 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
         ceid: Annotated[str | None, Field(description="Country/language edition filter, e.g. 'US:en' or 'GB:en'. Scopes results to that edition.")] = None,
         proxy_location: Annotated[ProxyLocation, Field(description="Country context for the search.")] = "US",
         device: Annotated[Device, Field(description="Emulated device type.")] = "desktop",
-    ) -> dict[str, Any]:
-        """Search Google News and return news articles and named entities via Serply.
+    ) -> str:
+        """Search Google News and return news articles via Serply.
 
         Use this tool when you need recent news coverage of a topic: breaking news,
         company announcements, political events, sports scores, or anything time-sensitive.
@@ -153,23 +201,38 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
         - "US:en" → US English news
         - "GB:en" → UK English news
         - "FR:fr" → French news in French
-
-        Returns:
-        - feed.entries — list of news articles with title, link, published date, source
-        - entities     — named entities (people, orgs, places) extracted from results
         """
         try:
             path = SerplyClient.build_query_path("/v1/news", query)
             if ceid:
                 path += f"&ceid={urllib.parse.quote_plus(ceid)}"
             data = await client.get(path, extra_headers=_headers(proxy_location, device))
-            feed = data.get("feed", {}) or {}
-            entries = feed.get("entries", []) if isinstance(feed, dict) else []
-            return {
-                "feed": feed,
-                "entities": data.get("entities", []),
-                "summary": f"Found {len(entries)} news articles for '{query}'",
-            }
+
+            # Entries are at the top level, not nested inside feed
+            entries = data.get("entries", [])
+            if not entries:
+                feed = data.get("feed", {}) or {}
+                entries = feed.get("entries", []) if isinstance(feed, dict) else []
+
+            lines: list[str] = [f'{len(entries)} articles for "{query}"']
+
+            for i, entry in enumerate(entries, 1):
+                title = (entry.get("title") or "").strip()
+                link = entry.get("link", "")
+                published = entry.get("published", "")
+                source = (entry.get("source") or {})
+                source_name = source.get("title") if isinstance(source, dict) else str(source)
+
+                meta = " · ".join(filter(None, [source_name, published]))
+                lines.append(f"\n{i}. {title}")
+                if meta:
+                    lines.append(f"   {meta}")
+                lines.append(f"   {link}")
+
+            if not entries:
+                lines.append("\nNo articles found.")
+
+            return "\n".join(lines)
         except SerplyError as exc:
             raise ToolError(str(exc)) from exc
 
@@ -178,7 +241,7 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
         query: Annotated[str, Field(description="Job title, role, or keyword to search for.", max_length=2048)],
         proxy_location: Annotated[ProxyLocation, Field(description="Country for job results. Note: Serply returns North American results only.")] = "US",
         device: Annotated[Device, Field(description="Emulated device type.")] = "desktop",
-    ) -> dict[str, Any]:
+    ) -> str:
         """Search Google Jobs and return job postings via Serply.
 
         Use this tool to find job listings from Google's job search index, which
@@ -187,25 +250,55 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
 
         IMPORTANT: Serply's Jobs API returns North American results regardless of
         `proxy_location`. Use it for US/Canada job searches.
-
-        Each job result includes:
-        - position       — job title
-        - description    — employer details, salary perks, remote/hybrid flags
-        - highlights     — key bullet points from the job description
-        - link           — URL to apply or view the full posting
-        - logo           — employer logo URL
-        - metadata       — posting date, location, company name
         """
         try:
             path = SerplyClient.build_query_path("/v1/job/search", query)
             data = await client.get(path, extra_headers=_headers(proxy_location, device))
             jobs = data.get("jobs", [])
-            return {
-                "jobs": jobs,
-                "ts": data.get("ts"),
-                "device_region": data.get("device_region"),
-                "summary": f"Found {len(jobs)} job postings for '{query}'",
-            }
+
+            lines: list[str] = [f'{len(jobs)} job postings for "{query}"']
+
+            for i, job in enumerate(jobs, 1):
+                position = (job.get("position") or "").strip()
+                link = job.get("link", "")
+                desc = job.get("description") or {}
+                employer = desc.get("employer", "") if isinstance(desc, dict) else ""
+                is_remote = desc.get("is_remote", False) if isinstance(desc, dict) else False
+                is_hybrid = desc.get("is_hybrid", False) if isinstance(desc, dict) else False
+                perks = desc.get("perks", []) if isinstance(desc, dict) else []
+                meta = job.get("metadata") or {}
+                location = meta.get("location", "") if isinstance(meta, dict) else ""
+                date_posted = meta.get("date_posted", "") if isinstance(meta, dict) else ""
+                highlights = job.get("highlights", [])
+
+                title_line = position
+                if employer:
+                    title_line += f" at {employer}"
+                lines.append(f"\n{i}. {title_line}")
+
+                tags: list[str] = []
+                if location:
+                    tags.append(location)
+                if is_remote:
+                    tags.append("Remote")
+                elif is_hybrid:
+                    tags.append("Hybrid")
+                if date_posted:
+                    tags.append(f"Posted: {date_posted}")
+                if tags:
+                    lines.append(f"   {' | '.join(tags)}")
+
+                if highlights:
+                    lines.append(f"   {' · '.join(highlights[:3])}")
+                elif perks:
+                    lines.append(f"   {' · '.join(str(p) for p in perks[:3])}")
+
+                lines.append(f"   {link}")
+
+            if not jobs:
+                lines.append("\nNo job postings found.")
+
+            return "\n".join(lines)
         except SerplyError as exc:
             raise ToolError(str(exc)) from exc
 
@@ -215,28 +308,35 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
         num: Annotated[int, Field(ge=1, le=100, description="Number of academic results.")] = 10,
         proxy_location: Annotated[ProxyLocation, Field(description="Country context for the search.")] = "US",
         device: Annotated[Device, Field(description="Emulated device type.")] = "desktop",
-    ) -> dict[str, Any]:
+    ) -> str:
         """Search Google Scholar and return academic papers and citations via Serply.
 
         Use this tool for research tasks: finding peer-reviewed papers, locating
         citations, understanding the academic consensus on a topic, or retrieving
         publication metadata.
 
-        Each result includes:
-        - title       — paper title
-        - link        — URL to the paper or its Google Scholar entry
-        - description — abstract snippet, authors, journal, and year
+        Each result includes title, URL, and an abstract snippet with authors and year.
         """
         try:
             path = SerplyClient.build_query_path("/v1/scholar", query, num=num)
             data = await client.get(path, extra_headers=_headers(proxy_location, device))
             results = data.get("results", [])
-            return {
-                "results": results,
-                "total": data.get("total"),
-                "ts": data.get("ts"),
-                "summary": f"Found {len(results)} academic results for '{query}'",
-            }
+
+            lines: list[str] = [f'{len(results)} academic results for "{query}"']
+
+            for i, r in enumerate(results, 1):
+                title = (r.get("title") or "").strip()
+                link = r.get("link", "")
+                desc = (r.get("description") or "").strip()
+                lines.append(f"\n{i}. {title}")
+                lines.append(f"   {link}")
+                if desc:
+                    lines.append(f"   {desc}")
+
+            if not results:
+                lines.append("\nNo academic results found.")
+
+            return "\n".join(lines)
         except SerplyError as exc:
             raise ToolError(str(exc)) from exc
 
@@ -245,7 +345,7 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
         query: Annotated[str, Field(description="Product name, brand, or keyword to search Amazon for.", max_length=2048)],
         proxy_location: Annotated[ProxyLocation, Field(description="Country storefront context.")] = "US",
         device: Annotated[Device, Field(description="Emulated device type.")] = "desktop",
-    ) -> dict[str, Any]:
+    ) -> str:
         """Search Amazon products via Google Shopping (Serply) and return product listings.
 
         Use this tool when the user wants to:
@@ -254,28 +354,63 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
         - Look up ASINs for specific products
         - Identify bestsellers or Prime-eligible items in a category
 
-        Each product result includes:
-        - title         — product name
-        - price         — listed price string (e.g. "$24.99")
-        - asin          — Amazon Standard Identification Number
-        - rating_stars  — average customer rating (0–5)
-        - review_count  — number of customer reviews
-        - link          — direct product URL
-        - img_url       — product image URL
-        - prime         — True if Prime-eligible
-        - bestseller    — True if marked as a bestseller
-        - is_sponsor    — True if a sponsored/ad result
+        Each result includes title, price, rating, review count, ASIN, and direct link.
         """
         try:
             path = SerplyClient.build_query_path("/v1/product/search", query)
             data = await client.get(path, extra_headers=_headers(proxy_location, device))
-            products = data.get("products", [])
-            return {
-                "products": products,
-                "ads": data.get("ads", []),
-                "ts": data.get("ts"),
-                "summary": f"Found {len(products)} Amazon products for '{query}'",
-            }
+            # API returns products under either "products" or "results" key
+            products = data.get("products") or data.get("results", [])
+            ads = data.get("ads", [])
+
+            lines: list[str] = [f'{len(products)} products for "{query}"']
+
+            for i, p in enumerate(products, 1):
+                title = (p.get("title") or "").strip()
+                price = p.get("price") or ""
+                asin = p.get("asin") or ""
+                rating = p.get("rating_stars")
+                reviews = p.get("review_count")
+                link = p.get("link", "")
+                prime = p.get("prime", False)
+                bestseller = p.get("bestseller", False)
+                sponsor = p.get("is_sponsor", False)
+
+                title_line = title
+                if price:
+                    title_line += f" — {price}"
+                lines.append(f"\n{i}. {title_line}")
+
+                meta_parts: list[str] = []
+                if rating is not None:
+                    star = f"★ {rating:.1f}"
+                    if reviews:
+                        star += f" ({reviews:,} reviews)"
+                    meta_parts.append(star)
+                if asin:
+                    meta_parts.append(f"ASIN: {asin}")
+                if prime:
+                    meta_parts.append("Prime")
+                if bestseller:
+                    meta_parts.append("Bestseller")
+                if sponsor:
+                    meta_parts.append("Sponsored")
+                if meta_parts:
+                    lines.append(f"   {' | '.join(meta_parts)}")
+                if link:
+                    lines.append(f"   {link}")
+
+            if not products:
+                lines.append("\nNo products found.")
+
+            if ads:
+                lines.append(f"\nSponsored ({len(ads)}):")
+                for ad in ads[:3]:
+                    ad_title = (ad.get("title") or "").strip()
+                    if ad_title:
+                        lines.append(f"- {ad_title}")
+
+            return "\n".join(lines)
         except SerplyError as exc:
             raise ToolError(str(exc)) from exc
 
@@ -286,7 +421,7 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
             Literal["full", "markdown"],
             Field(description="Output format: 'markdown' strips HTML to clean text (best for LLMs); 'full' returns raw HTML.")
         ] = "markdown",
-    ) -> dict[str, Any]:
+    ) -> str:
         """Fetch and return the content of any public web page via Serply.
 
         Use this tool when you have a specific URL and need to read its content —
@@ -299,13 +434,6 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
 
         Security: private/internal IP ranges (127.x, 10.x, 172.16-31.x, 192.168.x,
         169.254.x) and non-http(s) schemes are blocked to prevent SSRF attacks.
-
-        Returns:
-        - content        — page text or HTML
-        - content_hash   — SHA-256 of content (for deduplication)
-        - content_length — byte length of content
-        - url            — final URL after redirects
-        - response_type  — the format returned
         """
         if settings.block_internal_urls:
             try:
@@ -315,14 +443,11 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
         try:
             data = await client.post("/v1/request", json={"url": url, "response_type": response_type})
             content = data.get("content", "") or ""
-            return {
-                "content": content,
-                "content_hash": hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest(),
-                "content_length": len(content),
-                "url": data.get("url", url),
-                "response_type": data.get("response_type", response_type),
-                "summary": f"Scraped {len(content)} chars from {url} as {response_type}",
-            }
+            final_url = data.get("url", url)
+            content_hash = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
+
+            header = f"[Scraped {final_url} — {response_type}, {len(content):,} chars, sha256:{content_hash[:8]}]"
+            return f"{header}\n\n{content}"
         except SerplyError as exc:
             raise ToolError(str(exc)) from exc
 
