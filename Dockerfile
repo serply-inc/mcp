@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir "uv>=0.5" \
     && useradd --create-home --uid 10001 app
 
 WORKDIR /app
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
 COPY src ./src
 
 RUN uv pip install --system --no-cache .
