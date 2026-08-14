@@ -21,7 +21,7 @@ def create_app(settings: Settings, client: SerplyClient) -> FastMCP:
         name="serply-mcp-server",
         instructions=(
             "Real-time web search and scraping via Serply.io. "
-            "Tools: google_search, bing_search, google_video_search, "
+            "Tools: google_search, google_maps_search, bing_search, google_video_search, "
             "google_news_search, google_jobs_search, google_scholar_search, "
             "amazon_product_search, scrape_url."
         ),
