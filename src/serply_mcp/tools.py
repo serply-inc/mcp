@@ -442,7 +442,11 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
                 raise ToolError(str(exc)) from exc
         try:
             data = await client.post("/v1/request", json={"url": url, "response_type": response_type})
-            content = data.get("content", "") or ""
+            # /v1/request has two response shapes. response_type="full" returns
+            # JSON with the HTML under "data"; response_type="markdown" returns
+            # the text raw, which SerplyClient wraps into "content". Reading
+            # only "content" made "full" return 0 chars with no error at all.
+            content = data.get("content") or data.get("data") or ""
             final_url = data.get("url", url)
             content_hash = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
 

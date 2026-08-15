@@ -106,6 +106,15 @@ class SerplyClient:
             )
 
             if resp.status_code == 200:
+                # /v1/request answers with the scraped page as a raw body under
+                # content-type: text/html, not the JSON envelope every other
+                # endpoint uses. Without this branch resp.json() raises
+                # "Expecting value: line 1 column 1" and scrape_url fails on
+                # every URL. Wrap the body so callers see one shape either way;
+                # deliberately no "url" key, so the tool keeps falling back to
+                # the URL it asked for.
+                if "json" not in resp.headers.get("content-type", "").lower():
+                    return {"content": resp.text}
                 return resp.json()  # type: ignore[no-any-return]
 
             # Parse error body
