@@ -41,7 +41,7 @@ def build_starlette_app(settings: Settings, client: SerplyClient) -> Starlette:
     mcp = create_app(settings, client)
     mcp_asgi = mcp.streamable_http_app()
 
-    rate_limiter = RateLimiter(settings.mcp_rate_limit_per_minute)
+    rate_limiter = RateLimiter(settings.mcp_rate_limit_per_hour)
     authed_mcp = PassthroughKeyMiddleware(
         app=mcp_asgi,
         mcp_path=settings.mcp_http_path,

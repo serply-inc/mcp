@@ -233,7 +233,7 @@ All configuration is via environment variables. No config file is required.
 | `MCP_HTTP_HOST` | No | `0.0.0.0` | HTTP bind host |
 | `MCP_HTTP_PORT` | No | `8000` | HTTP bind port |
 | `MCP_HTTP_PATH` | No | `/mcp` | HTTP mount path |
-| `MCP_RATE_LIMIT_PER_MINUTE` | No | `60` | Per-client request rate limit |
+| `MCP_RATE_LIMIT_PER_HOUR` | No | `5000` | Per-API-key request rate limit, sliding one-hour window |
 | `SERPLY_BASE_URL` | No | `https://api.serply.io` | Override the Serply API base URL |
 | `SERPLY_TIMEOUT_SECONDS` | No | `30` | Per-request timeout in seconds |
 | `SERPLY_MAX_RETRIES` | No | `3` | Retry attempts on 429/5xx (exponential backoff) |
