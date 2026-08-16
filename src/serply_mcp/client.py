@@ -115,7 +115,15 @@ class SerplyClient:
                 # the URL it asked for.
                 if "json" not in resp.headers.get("content-type", "").lower():
                     return {"content": resp.text}
-                return resp.json()  # type: ignore[no-any-return]
+                payload = resp.json()
+                # /v1/reddit/comments/{id} passes Reddit's own shape straight
+                # through, and that is a two-element JSON *array* — [post
+                # listing, comment listing] — not an object. Every caller here
+                # is typed for a dict, so wrap the array under "listings"
+                # rather than let a list escape into tools that call .get().
+                if isinstance(payload, list):
+                    return {"listings": payload}
+                return payload  # type: ignore[no-any-return]
 
             # Parse error body
             try:

@@ -107,6 +107,35 @@ class ProductResponse(BaseModel):
     device_type: str | None = None
 
 
+# Reddit
+REDDIT_LISTING_SORTS = ("hot", "new", "top", "rising", "controversial")
+REDDIT_COMMENT_SORTS = ("confidence", "top", "new", "controversial", "old", "qa")
+REDDIT_TIME_WINDOWS = ("hour", "day", "week", "month", "year", "all")
+
+
+class RedditThing(BaseModel):
+    """One `{kind, data}` envelope — t1 comment, t3 post, t5 subreddit, or 'more'."""
+
+    kind: str = ""
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class RedditListingData(BaseModel):
+    after: str | None = None
+    before: str | None = None
+    children: list[RedditThing] = Field(default_factory=list)
+
+
+class RedditListing(BaseModel):
+    kind: str = "Listing"
+    data: RedditListingData = Field(default_factory=RedditListingData)
+
+
+class RedditAbout(BaseModel):
+    kind: str = "t5"
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
 # URL Scraper
 class ScrapeResponse(BaseModel):
     content: str = ""
