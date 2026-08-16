@@ -606,6 +606,28 @@ async def test_reddit_post_comments_array_response(test_settings, mock_serply):
 
 
 @pytest.mark.asyncio
+async def test_reddit_post_comments_cached_envelope(test_settings, mock_serply):
+    """What the API actually returns: the array wrapped as {"cached", "data"}.
+
+    The array fixture above passed while production reported "No comments on
+    this post." on every thread, so exercise the shape that ships.
+    """
+    top = {"kind": "t1", "data": {"author": "commenter", "body": "Top level comment"}}
+    mock_serply.get(url__regex=r".*/v1/reddit/comments/.*").mock(
+        return_value=httpx.Response(
+            200, json={"cached": True, "data": [_listing(_POST), _listing(top)]}
+        )
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("reddit_post_comments", {"post_id": "1vfemi1"}))
+    assert "Showcase Thread" in result
+    assert "u/commenter" in result
+    assert "Top level comment" in result
+    assert "No comments on this post." not in result
+
+
+@pytest.mark.asyncio
 async def test_reddit_post_comments_respects_max_depth(test_settings, mock_serply):
     deep = {"kind": "t1", "data": {"author": "deep", "body": "Too deep"}}
     top = {"kind": "t1", "data": {"author": "top", "body": "Shallow", "replies": _listing(deep)}}

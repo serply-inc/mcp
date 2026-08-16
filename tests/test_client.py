@@ -47,6 +47,30 @@ async def test_get_wraps_top_level_json_array(test_settings, mock_serply):
 
 
 @pytest.mark.asyncio
+async def test_get_unwraps_cached_envelope(test_settings, mock_serply):
+    """In production the comments array arrives wrapped as {"cached", "data"}."""
+    listings = [{"kind": "Listing", "data": {}}, {"kind": "Listing", "data": {}}]
+    mock_serply.get("/v1/reddit/comments/abc123").mock(
+        return_value=httpx.Response(200, json={"cached": True, "data": listings})
+    )
+    async with SerplyClient(test_settings) as c:
+        result = await c.get("/v1/reddit/comments/abc123")
+    assert result == {"listings": listings}
+
+
+@pytest.mark.asyncio
+async def test_get_leaves_reddit_listing_object_alone(test_settings, mock_serply):
+    """A real listing has a "data" key too — but an object, and tagged by "kind"."""
+    payload = {"kind": "Listing", "data": {"after": None, "children": []}}
+    mock_serply.get("/v1/reddit/subreddit/python").mock(
+        return_value=httpx.Response(200, json=payload)
+    )
+    async with SerplyClient(test_settings) as c:
+        result = await c.get("/v1/reddit/subreddit/python")
+    assert result == payload
+
+
+@pytest.mark.asyncio
 async def test_post_sends_api_key_and_json(test_settings, mock_serply):
     mock_serply.post("/v1/request").mock(
         return_value=httpx.Response(200, json={"content": "ok", "url": "https://example.com"})

@@ -930,8 +930,9 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
             ident = _strip_prefix(post_id, "t3_")
             data = await client.get(_reddit_path("comments", ident, sort=sort))
 
-            # Reddit answers /comments/{id} with [post listing, comment listing];
-            # SerplyClient parks that array under "listings". Sort children by
+            # Reddit answers /comments/{id} with [post listing, comment
+            # listing], which the API wraps as {"cached", "data"};
+            # SerplyClient normalises both under "listings". Sort children by
             # kind instead of trusting the order, so a single-listing response
             # (or a reordered one) still renders.
             listings = data.get("listings")
