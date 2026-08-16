@@ -1,12 +1,10 @@
-"""Tests for all 8 Serply MCP tools (tools.py)."""
+"""Tests for all 9 Serply MCP tools (tools.py)."""
 from __future__ import annotations
 
 import unittest.mock as mock
 
 import httpx
 import pytest
-import respx
-
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
@@ -25,6 +23,18 @@ def _unwrap(result) -> str:
     """Extract the text content from a FastMCP call_tool result."""
     content = result[0] if isinstance(result, tuple) else result
     return content[0].text if content else ""
+
+
+def _unwrap_structured(result):
+    """The structured half of a FastMCP (content, structured) result.
+
+    Every other tool renders a string and is asserted on with `in`, so _unwrap
+    takes the first element. google_maps_search is the one tool that returns a
+    dict, and its assertions index into that dict, so it needs the second.
+    Merging the Maps branch brought a version of _unwrap that returned the
+    structured half for everything, which broke all the string assertions.
+    """
+    return result[1] if isinstance(result, tuple) else result
 
 
 # ── google_search ─────────────────────────────────────────────────────────────
@@ -71,6 +81,94 @@ async def test_google_search_tool_error_on_failure(test_settings, mock_serply):
         mcp = _make_mcp(test_settings, client)
         with pytest.raises(ToolError):
             await mcp.call_tool("google_search", {"query": "test"})
+
+
+# ── google_maps_search ────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_google_maps_search_path_and_response(test_settings, mock_serply):
+    mock_serply.get(url__regex=r".*/v1/maps/search/.*").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "search_engine": "google_maps",
+                "query": "personal injury lawyer chicago",
+                "places": [
+                    {
+                        "position": 1,
+                        "name": "Example Law",
+                        "data_id": "0xabc:0xdef",
+                        "place_id": "ChIJexample",
+                        "website": "https://example.com",
+                        "latitude": 41.88,
+                        "longitude": -87.63,
+                    }
+                ],
+                "result_count": 1,
+                "metadata": {"transport": "direct"},
+            },
+        )
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap_structured(
+            await mcp.call_tool(
+                "google_maps_search",
+                {
+                    "query": "personal injury lawyer chicago",
+                    "num": 40,
+                    "hl": "en",
+                    "gl": "US",
+                },
+            )
+        )
+
+    request_url = str(mock_serply.calls[0].request.url)
+    assert "/v1/maps/search/personal%20injury%20lawyer%20chicago" in request_url
+    assert "num=40" in request_url
+    assert "hl=en" in request_url
+    assert "gl=us" in request_url
+    assert result["places"][0]["place_id"] == "ChIJexample"
+    assert result["metadata"]["transport"] == "direct"
+    assert result["summary"] == (
+        "Found 1 Google Maps places for 'personal injury lawyer chicago'"
+    )
+
+
+@pytest.mark.asyncio
+async def test_google_maps_search_tool_error(test_settings, mock_serply):
+    mock_serply.get(url__regex=r".*/v1/maps/search/.*").mock(
+        return_value=httpx.Response(
+            502,
+            json={"error": {"message": "maps unavailable"}},
+        )
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        with pytest.raises(ToolError):
+            await mcp.call_tool("google_maps_search", {"query": "coffee chicago"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"query": "coffee chicago", "num": 0},
+        {"query": "coffee chicago", "num": 201},
+        {"query": "coffee chicago", "hl": "not_a_locale"},
+        {"query": "coffee chicago", "gl": "USA"},
+    ],
+)
+async def test_google_maps_search_validates_inputs(
+    test_settings,
+    mock_serply,
+    arguments,
+):
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        with pytest.raises(ToolError):
+            await mcp.call_tool("google_maps_search", arguments)
+    assert not mock_serply.calls
 
 
 # ── bing_search ───────────────────────────────────────────────────────────────
