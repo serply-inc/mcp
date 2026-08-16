@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import urllib.parse
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
@@ -31,7 +31,7 @@ def _clean_url(url: str) -> str:
 
 
 def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> None:
-    """Register all 8 Serply tools and the account/usage resource on *mcp*."""
+    """Register all 9 Serply tools and the account/usage resource on *mcp*."""
 
     def _headers(proxy_location: str, device: str) -> dict[str, str]:
         return {"X-Proxy-Location": proxy_location, "X-User-Agent": device}
@@ -85,6 +85,71 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
                 lines.append("\nNo results found.")
 
             return "\n".join(lines)
+        except SerplyError as exc:
+            raise ToolError(str(exc)) from exc
+
+    @mcp.tool()
+    async def google_maps_search(
+        query: Annotated[
+            str,
+            Field(
+                description="Place, business, category, or location to search.",
+                max_length=2048,
+            ),
+        ],
+        num: Annotated[
+            int,
+            Field(ge=1, le=200, description="Number of places to request (1–200)."),
+        ] = 20,
+        hl: Annotated[
+            str,
+            Field(
+                min_length=2,
+                max_length=8,
+                pattern=r"^[A-Za-z]{2,3}(?:-[A-Za-z]{2,4})?$",
+                description="Google interface language code, such as 'en' or 'en-US'.",
+            ),
+        ] = "en",
+        gl: Annotated[
+            str,
+            Field(
+                min_length=2,
+                max_length=2,
+                pattern=r"^[A-Za-z]{2}$",
+                description="Two-letter country code, such as 'us' or 'gb'.",
+            ),
+        ] = "us",
+    ) -> dict[str, Any]:
+        """Search Google Maps and return structured local-business places via Serply.
+
+        Use this for local and commercial intent: businesses, services, venues,
+        addresses, ratings, review counts, phone numbers, hours, and direct websites.
+        This endpoint uses Serply's direct non-JavaScript Maps transport, so it does
+        not accept browser-device or proxy-location controls.
+
+        The response includes `places`, `result_count`, query metadata, and for each
+        place the available Google IDs, Maps URL, website, address, coordinates,
+        rating, reviews, categories, phone, timezone, thumbnail, and opening hours.
+
+        Put the location in the query, for example `coffee shops in 60601`,
+        `coffee shops in Chicago, IL`, or `coffee shops near 41.8781,-87.6298`.
+        Coordinates are natural-language query context; separate latitude,
+        longitude, radius, and pagination arguments are not currently available.
+        `gl` must be a two-letter country code such as `us`, `gb`, or `ca`.
+        """
+        try:
+            encoded_query = urllib.parse.quote(query, safe="")
+            query_string = urllib.parse.urlencode(
+                {"num": num, "hl": hl, "gl": gl.lower()}
+            )
+            data = await client.get(
+                f"/v1/maps/search/{encoded_query}?{query_string}"
+            )
+            places = data.get("places", [])
+            return {
+                **data,
+                "summary": f"Found {len(places)} Google Maps places for '{query}'",
+            }
         except SerplyError as exc:
             raise ToolError(str(exc)) from exc
 
@@ -442,7 +507,11 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
                 raise ToolError(str(exc)) from exc
         try:
             data = await client.post("/v1/request", json={"url": url, "response_type": response_type})
-            content = data.get("content", "") or ""
+            # /v1/request has two response shapes. response_type="full" returns
+            # JSON with the HTML under "data"; response_type="markdown" returns
+            # the text raw, which SerplyClient wraps into "content". Reading
+            # only "content" made "full" return 0 chars with no error at all.
+            content = data.get("content") or data.get("data") or ""
             final_url = data.get("url", url)
             content_hash = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
 

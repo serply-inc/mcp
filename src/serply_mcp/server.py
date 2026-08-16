@@ -21,7 +21,7 @@ def create_app(settings: Settings, client: SerplyClient) -> FastMCP:
         name="serply-mcp-server",
         instructions=(
             "Real-time web search and scraping via Serply.io. "
-            "Tools: google_search, bing_search, google_video_search, "
+            "Tools: google_search, google_maps_search, bing_search, google_video_search, "
             "google_news_search, google_jobs_search, google_scholar_search, "
             "amazon_product_search, scrape_url."
         ),
@@ -41,7 +41,7 @@ def build_starlette_app(settings: Settings, client: SerplyClient) -> Starlette:
     mcp = create_app(settings, client)
     mcp_asgi = mcp.streamable_http_app()
 
-    rate_limiter = RateLimiter(settings.mcp_rate_limit_per_minute)
+    rate_limiter = RateLimiter(settings.mcp_rate_limit_per_hour)
     authed_mcp = PassthroughKeyMiddleware(
         app=mcp_asgi,
         mcp_path=settings.mcp_http_path,

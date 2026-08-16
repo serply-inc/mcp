@@ -12,11 +12,12 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that gi
 
 ## What this server provides
 
-Eight tools that give AI assistants real-time access to the web:
+Nine tools that give AI assistants real-time access to the web:
 
 | Tool | What it does |
 |---|---|
 | `google_search` | Google web search — organic results, featured snippets, and answer boxes |
+| `google_maps_search` | Google Maps — structured local businesses, websites, ratings, coordinates, phone numbers, and hours |
 | `bing_search` | Bing web search — organic results, ads, and shopping results |
 | `google_video_search` | Google video search — results from YouTube and other video platforms |
 | `google_news_search` | Google News — fresh articles with named-entity extraction |
@@ -81,7 +82,7 @@ claude mcp add serply \
 
 ## Tools
 
-Detailed descriptions for all 8 tools. Parameters marked `*` are required.
+Detailed descriptions for all 9 tools. Parameters marked `*` are required.
 
 ---
 
@@ -100,6 +101,61 @@ Use this tool for factual lookups, recent events, product research, technical do
 | `device` | string | `"desktop"` | Emulated device type: `desktop` or `mobile` |
 
 **Returns:** `results[]` (title, link, description), `total`, `answer` (featured snippet if present)
+
+---
+
+### `google_maps_search`
+
+Search Google Maps using Serply's direct non-JavaScript structured transport.
+Use it for local businesses, services, venues, addresses, ratings, phone numbers,
+opening hours, and direct business websites. It is independent of the browser and
+requests-proxy fleets, so it intentionally has no device or proxy-location option.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `query` * | string | — | Place, business, category, or location (max 2048 chars) |
+| `num` | integer | `20` | Number of places requested (1–200) |
+| `hl` | string | `"en"` | Google interface language code |
+| `gl` | string | `"us"` | Two-letter country code |
+
+**Returns:** `places[]`, `result_count`, `parsed_at`, and `metadata`. Place records
+include available IDs, Maps URL, website, address, coordinates, rating/review count,
+categories, phone, timezone, thumbnail, and opening hours.
+
+Location is expressed in the natural-language query:
+
+| Location form | Example `query` |
+|---|---|
+| ZIP code | `coffee shops in 60601` |
+| City | `coffee shops in Chicago, IL` |
+| Coordinates | `coffee shops near 41.8781,-87.6298` |
+
+Example MCP arguments:
+
+```json
+{
+  "query": "coffee shops in Chicago, IL",
+  "num": 20,
+  "hl": "en",
+  "gl": "us"
+}
+```
+
+`gl` must be exactly two letters (`us`, not `u`). Coordinates are query context;
+the current tool does not expose separate latitude, longitude, radius, pagination,
+device, or proxy-location parameters. Google may return fewer than `num` places
+when local inventory is exhausted.
+
+The equivalent direct HTTP request is:
+
+```bash
+curl --fail-with-body \
+  -H "x-api-key: $SERPLY_API_KEY" \
+  "https://api.serply.io/v1/maps/search/coffee%20shops%20in%20Chicago%2C%20IL?num=20&hl=en&gl=us"
+```
+
+Keep API keys in environment variables; never place them in a URL, MCP config
+committed to source control, or issue/chat text.
 
 ---
 
@@ -233,7 +289,7 @@ All configuration is via environment variables. No config file is required.
 | `MCP_HTTP_HOST` | No | `0.0.0.0` | HTTP bind host |
 | `MCP_HTTP_PORT` | No | `8000` | HTTP bind port |
 | `MCP_HTTP_PATH` | No | `/mcp` | HTTP mount path |
-| `MCP_RATE_LIMIT_PER_MINUTE` | No | `60` | Per-client request rate limit |
+| `MCP_RATE_LIMIT_PER_HOUR` | No | `5000` | Per-API-key request rate limit, sliding one-hour window |
 | `SERPLY_BASE_URL` | No | `https://api.serply.io` | Override the Serply API base URL |
 | `SERPLY_TIMEOUT_SECONDS` | No | `30` | Per-request timeout in seconds |
 | `SERPLY_MAX_RETRIES` | No | `3` | Retry attempts on 429/5xx (exponential backoff) |

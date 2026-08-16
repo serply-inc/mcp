@@ -14,7 +14,7 @@ class Settings:
     mcp_http_host: str = "0.0.0.0"
     mcp_http_port: int = 8000
     mcp_http_path: str = "/mcp"
-    mcp_rate_limit_per_minute: int = 60
+    mcp_rate_limit_per_hour: int = 5000
     block_internal_urls: bool = True
     log_level: str = "INFO"
 
@@ -29,7 +29,7 @@ def get_settings() -> Settings:
         mcp_http_host=os.environ.get("MCP_HTTP_HOST", "0.0.0.0"),
         mcp_http_port=int(os.environ.get("MCP_HTTP_PORT", "8000")),
         mcp_http_path=os.environ.get("MCP_HTTP_PATH", "/mcp"),
-        mcp_rate_limit_per_minute=int(os.environ.get("MCP_RATE_LIMIT_PER_MINUTE", "60")),
+        mcp_rate_limit_per_hour=int(os.environ.get("MCP_RATE_LIMIT_PER_HOUR", "5000")),
         block_internal_urls=os.environ.get("BLOCK_INTERNAL_URLS", "true").lower() == "true",
         log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
     )

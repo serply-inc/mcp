@@ -13,15 +13,23 @@ logger = logging.getLogger(__name__)
 
 
 class RateLimiter:
-    """In-memory sliding-window rate limiter keyed by token."""
+    """In-memory sliding-window rate limiter keyed by token.
 
-    def __init__(self, requests_per_minute: int) -> None:
-        self._limit = requests_per_minute
+    The window is an hour, not a minute. A per-minute cap punishes the normal
+    shape of agent traffic - an agent fans out a dozen tool calls at once, then
+    sits idle while the model thinks - even when its hourly volume is trivial.
+    Credits are the real meter; this limiter only exists to stop a runaway loop.
+    """
+
+    WINDOW_SECONDS = 3600.0
+
+    def __init__(self, requests_per_hour: int) -> None:
+        self._limit = requests_per_hour
         self._windows: dict[str, deque[float]] = {}
 
     def is_allowed(self, token: str) -> bool:
         now = time.monotonic()
-        window_start = now - 60.0
+        window_start = now - self.WINDOW_SECONDS
         if token not in self._windows:
             self._windows[token] = deque()
         dq = self._windows[token]
@@ -30,7 +38,17 @@ class RateLimiter:
         if len(dq) >= self._limit:
             return False
         dq.append(now)
+        # An hour-long window keeps up to `limit` timestamps per key alive 60x
+        # longer than the old minute did, and nothing ever removed a key that
+        # went quiet. Drop the key once its window empties so a long tail of
+        # one-off API keys cannot grow this dict without bound.
+        self._evict_idle(window_start)
         return True
+
+    def _evict_idle(self, window_start: float) -> None:
+        stale = [t for t, w in self._windows.items() if not w or w[-1] < window_start]
+        for t in stale:
+            del self._windows[t]
 
 
 _PRIVATE_NETWORKS = [
