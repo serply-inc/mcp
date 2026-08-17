@@ -24,7 +24,7 @@ def create_app(settings: Settings, client: SerplyClient) -> FastMCP:
             "Tools: google_search, google_maps_search, bing_search, google_video_search, "
             "google_news_search, google_jobs_search, google_scholar_search, "
             "amazon_product_search, reddit_subreddit_posts, reddit_subreddit_about, "
-            "reddit_user_posts, reddit_post_comments, scrape_url."
+            "reddit_user_posts, reddit_post, reddit_post_comments, scrape_url."
         ),
         host=settings.mcp_http_host,
         port=settings.mcp_http_port,

@@ -7,7 +7,7 @@ from serply_mcp.server import build_starlette_app, create_app, healthz
 
 
 @pytest.mark.asyncio
-async def test_create_app_registers_13_tools(test_settings):
+async def test_create_app_registers_14_tools(test_settings):
     async with SerplyClient(test_settings) as client:
         mcp = create_app(test_settings, client)
         tools = await mcp.list_tools()
@@ -24,6 +24,7 @@ async def test_create_app_registers_13_tools(test_settings):
         "reddit_subreddit_posts",
         "reddit_subreddit_about",
         "reddit_user_posts",
+        "reddit_post",
         "reddit_post_comments",
         "scrape_url",
     }

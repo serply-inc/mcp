@@ -27,6 +27,7 @@ Thirteen tools that give AI assistants real-time access to the web:
 | `reddit_subreddit_posts` | Reddit — posts from a subreddit, sortable and paginated |
 | `reddit_subreddit_about` | Reddit — subreddit metadata: subscribers, online count, description |
 | `reddit_user_posts` | Reddit — a user's submission and comment history |
+| `reddit_post` | Reddit — one post's full body as markdown, comments optional |
 | `reddit_post_comments` | Reddit — the full comment thread on a post, nested replies included |
 | `scrape_url` | Fetch and convert any public web page to clean Markdown or raw HTML |
 
@@ -86,7 +87,7 @@ claude mcp add serply \
 
 ## Tools
 
-Detailed descriptions for all 13 tools. Parameters marked `*` are required.
+Detailed descriptions for all 14 tools. Parameters marked `*` are required.
 
 ---
 
@@ -268,7 +269,7 @@ List posts from a subreddit.
 
 Use to see what a community is discussing right now, pull the top posts of a week or
 month, or gather sentiment on a product or topic. Each post carries its `id`, which
-you can hand to `reddit_post_comments` to read the discussion.
+you can hand to `reddit_post` for the full body, or `reddit_post_comments` for the discussion.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -319,6 +320,29 @@ one timeline; comments show the thread they were left on.
 
 **Returns:** a numbered timeline of posts (t3) and comments (t1) with scores,
 timestamps, subreddits, permalinks, and body snippets, plus the next-page cursor.
+
+---
+
+### `reddit_post`
+
+Read one post's full content.
+
+Use when you have a post id or Reddit URL and want what the post actually says. The
+listing tools truncate bodies to a ~400 character snippet; this returns the complete
+self-text in Reddit's own markdown — headings, lists, links, code blocks intact.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `post_id` * | string | — | Post id from the URL — `1vfemi1` in `reddit.com/r/Python/comments/1vfemi1/…`. A `t3_` prefix is accepted |
+| `with_comments` | boolean | `false` | Also render the comment tree under the post |
+| `sort` | string | `"confidence"` | Comment ordering, when `with_comments` is true |
+| `max_depth` | integer | `3` | Levels of nested replies to render (0–10) |
+
+**Returns:** markdown — an `#` title, an italic metadata line (subreddit, author, score,
+comment count, timestamp), a bullet list with the permalink and id, then the body.
+
+Link posts have an empty body by design; their content is the `links to` URL, which you
+can pass to `scrape_url`.
 
 ---
 
