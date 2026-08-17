@@ -776,6 +776,20 @@ async def test_reddit_post_missing(test_settings, mock_serply):
 
 
 @pytest.mark.asyncio
+async def test_reddit_post_404_is_an_answer_not_an_error(test_settings, mock_serply):
+    mock_serply.get(url__regex=r".*/v1/reddit/post/.*").mock(
+        return_value=httpx.Response(
+            404, json={"detail": "No Reddit post found for id zzzzzzz"}
+        )
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("reddit_post", {"post_id": "zzzzzzz"}))
+    assert "No post found for id zzzzzzz." in result
+    assert len(mock_serply.calls) == 1  # a 404 is not retried
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "arguments",
     [

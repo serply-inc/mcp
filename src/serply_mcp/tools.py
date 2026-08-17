@@ -13,7 +13,7 @@ from pydantic import Field
 from serply_mcp.auth import check_ssrf
 from serply_mcp.client import SerplyClient
 from serply_mcp.config import Settings
-from serply_mcp.errors import SerplyError
+from serply_mcp.errors import NotFoundError, SerplyError
 
 ProxyLocation = Literal[
     "US", "EU", "CA", "IE", "GB", "FR", "DE", "SE", "IN", "JP", "KR", "SG", "AU", "BR"
@@ -1111,7 +1111,12 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
                 )
                 rendered: list[str] = []
                 for child in comments:
-                    _render_comment(child, 0, max_depth, rendered, full_body=True)
+                    # A caller who asked for the post's content wants the
+                    # replies whole too, so allow more per comment than the
+                    # thread reader's 700-character default.
+                    _render_comment(
+                        child, 0, max_depth, rendered, body_limit=1500, full_body=True
+                    )
                 lines.append("")
                 if rendered:
                     top_level = sum(1 for c in comments if c.get("kind") == "t1")
@@ -1122,6 +1127,10 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
                     lines.append("No comments on this post.")
 
             return "\n".join(lines).rstrip()
+        except NotFoundError:
+            # An id that does not exist is an answer, not a failure — returning
+            # it as text keeps the agent from retrying a lookup that cannot work.
+            return f"No post found for id {_strip_prefix(post_id, 't3_')}."
         except SerplyError as exc:
             raise ToolError(str(exc)) from exc
 
