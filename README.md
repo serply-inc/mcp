@@ -12,7 +12,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that gi
 
 ## What this server provides
 
-Thirteen tools that give AI assistants real-time access to the web:
+Fourteen tools that give AI assistants real-time access to the web:
 
 | Tool | What it does |
 |---|---|
@@ -343,6 +343,9 @@ comment count, timestamp), a bullet list with the permalink and id, then the bod
 
 Link posts have an empty body by design; their content is the `links to` URL, which you
 can pass to `scrape_url`.
+
+An id that does not exist comes back as a plain `No post found for id …` answer rather
+than a tool error, so a client will not retry it.
 
 ---
 
