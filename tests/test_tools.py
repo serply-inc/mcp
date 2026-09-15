@@ -336,7 +336,8 @@ async def test_google_scholar_search(test_settings, mock_serply):
             "title": "Attention Is All You Need",
             "link": "https://arxiv.org/abs/1706.03762",
             "id": "2960712678066186980",
-            "description": "The dominant sequence transduction models are based on ...",
+            # the HTML path returns the byline as description as well
+            "description": "A Vaswani, N Shazeer, N Parmar - Advances in neural information processing systems, 2017",
             "author": {
                 "names": "A Vaswani, N Shazeer, N Parmar - Advances in neural information processing systems, 2017",
                 "authors": [{"name": "A Vaswani", "link": "https://scholar.google.com/citations?user=x"}],
@@ -351,7 +352,7 @@ async def test_google_scholar_search(test_settings, mock_serply):
     assert result.startswith('1 academic results for "transformer attention"')
     assert "Attention Is All You Need" in result
     assert "arxiv.org" in result
-    assert "A Vaswani, N Shazeer" in result
+    assert result.count("A Vaswani, N Shazeer") == 1
     assert "Cited by 150000" in result
     assert "No academic results" not in result
 
