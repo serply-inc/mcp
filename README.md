@@ -243,7 +243,7 @@ Use for research tasks: finding peer-reviewed papers, locating citations, unders
 | `proxy_location` | string | `"US"` | Country context |
 | `device` | string | `"desktop"` | `desktop` or `mobile` |
 
-**Returns:** `results[]` (title, link, abstract snippet, authors, journal, year), `total`
+**Returns:** `articles[]` (title, link, abstract snippet, author byline with venue and year, `Cited by N`)
 
 ---
 

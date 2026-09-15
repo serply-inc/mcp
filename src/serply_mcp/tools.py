@@ -623,7 +623,9 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
         try:
             path = SerplyClient.build_query_path("/v1/scholar", query, num=num)
             data = await client.get(path, extra_headers=_headers(proxy_location, device))
-            results = data.get("results", [])
+            # /v1/scholar returns papers under `articles`; `results` is the
+            # (always empty) web-results slot of the shared response shape.
+            results = data.get("articles") or data.get("results") or []
 
             lines: list[str] = [f'{len(results)} academic results for "{query}"']
 
@@ -631,10 +633,19 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
                 title = (r.get("title") or "").strip()
                 link = r.get("link", "")
                 desc = (r.get("description") or "").strip()
+                author = r.get("author")
+                byline = (author.get("names") or "").strip() if isinstance(author, dict) else ""
+                extras = r.get("extras") or {}
+                citations = extras.get("citations") if isinstance(extras, dict) else None
+                cited_by = (citations.get("count") or "").strip() if isinstance(citations, dict) else ""
                 lines.append(f"\n{i}. {title}")
                 lines.append(f"   {link}")
+                if byline:
+                    lines.append(f"   {byline}")
                 if desc:
                     lines.append(f"   {desc}")
+                if cited_by:
+                    lines.append(f"   {cited_by}")
 
             if not results:
                 lines.append("\nNo academic results found.")

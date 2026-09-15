@@ -329,16 +329,42 @@ async def test_google_jobs_tool_error(test_settings, mock_serply):
 
 @pytest.mark.asyncio
 async def test_google_scholar_search(test_settings, mock_serply):
+    # the real /v1/scholar shape: papers live under `articles`, `results` is
+    # the empty web-results slot of the shared response envelope
     mock_serply.get(url__regex=r".*/v1/scholar/.*").mock(return_value=httpx.Response(200, json={
-        "results": [{"title": "Attention Is All You Need", "link": "https://arxiv.org/abs/1706.03762", "description": "Vaswani et al. 2017"}],
-        "total": 1,
+        "articles": [{
+            "title": "Attention Is All You Need",
+            "link": "https://arxiv.org/abs/1706.03762",
+            "id": "2960712678066186980",
+            "description": "The dominant sequence transduction models are based on ...",
+            "author": {
+                "names": "A Vaswani, N Shazeer, N Parmar - Advances in neural information processing systems, 2017",
+                "authors": [{"name": "A Vaswani", "link": "https://scholar.google.com/citations?user=x"}],
+            },
+            "extras": {"citations": {"count": "Cited by 150000", "link": "https://scholar.google.com/scholar?cites=1"}},
+        }],
+        "results": [],
     }))
     async with SerplyClient(test_settings) as client:
         mcp = _make_mcp(test_settings, client)
         result = _unwrap(await mcp.call_tool("google_scholar_search", {"query": "transformer attention"}))
+    assert result.startswith('1 academic results for "transformer attention"')
     assert "Attention Is All You Need" in result
     assert "arxiv.org" in result
-    assert "Vaswani" in result
+    assert "A Vaswani, N Shazeer" in result
+    assert "Cited by 150000" in result
+    assert "No academic results" not in result
+
+
+@pytest.mark.asyncio
+async def test_google_scholar_search_empty(test_settings, mock_serply):
+    mock_serply.get(url__regex=r".*/v1/scholar/.*").mock(return_value=httpx.Response(200, json={
+        "articles": [], "results": [],
+    }))
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("google_scholar_search", {"query": "zzz"}))
+    assert "No academic results found." in result
 
 
 @pytest.mark.asyncio
