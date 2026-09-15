@@ -642,7 +642,9 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
                 lines.append(f"   {link}")
                 if byline:
                     lines.append(f"   {byline}")
-                if desc:
+                # scholar.google.com results carry the byline as `description`
+                # too (the API's long-standing shape); only print it once
+                if desc and desc != byline:
                     lines.append(f"   {desc}")
                 if cited_by:
                     lines.append(f"   {cited_by}")
