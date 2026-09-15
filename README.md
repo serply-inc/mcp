@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/protocol-MCP-7b3fe4.svg)](https://modelcontextprotocol.io)
 
-A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that gives any MCP-compatible AI client live web search, news, academic search, job listings, Amazon product lookup, and URL scraping — powered by the [Serply.io](https://serply.io) API.
+A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that gives any MCP-compatible AI client live web search, news, academic search, job listings, Amazon product lookup, Reddit, and URL scraping — powered by the [Serply.io](https://serply.io) API.
 
 > **Disclaimer:** This project is not affiliated with, endorsed by, or sponsored by Serply, Inc. Serply.io is a third-party paid service. You need your own Serply API key to use this server.
 
@@ -12,7 +12,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that gi
 
 ## What this server provides
 
-Nine tools that give AI assistants real-time access to the web:
+Fourteen tools that give AI assistants real-time access to the web:
 
 | Tool | What it does |
 |---|---|
@@ -24,6 +24,11 @@ Nine tools that give AI assistants real-time access to the web:
 | `google_jobs_search` | Google Jobs — job listings aggregated from LinkedIn, Indeed, and company sites |
 | `google_scholar_search` | Google Scholar — peer-reviewed papers, citations, and abstracts |
 | `amazon_product_search` | Amazon product listings — prices, ratings, ASINs, and Prime eligibility |
+| `reddit_subreddit_posts` | Reddit — posts from a subreddit, sortable and paginated |
+| `reddit_subreddit_about` | Reddit — subreddit metadata: subscribers, online count, description |
+| `reddit_user_posts` | Reddit — a user's submission and comment history |
+| `reddit_post` | Reddit — one post's full body as markdown, comments optional |
+| `reddit_post_comments` | Reddit — the full comment thread on a post, nested replies included |
 | `scrape_url` | Fetch and convert any public web page to clean Markdown or raw HTML |
 
 ---
@@ -82,7 +87,7 @@ claude mcp add serply \
 
 ## Tools
 
-Detailed descriptions for all 9 tools. Parameters marked `*` are required.
+Detailed descriptions for all 14 tools. Parameters marked `*` are required.
 
 ---
 
@@ -238,7 +243,7 @@ Use for research tasks: finding peer-reviewed papers, locating citations, unders
 | `proxy_location` | string | `"US"` | Country context |
 | `device` | string | `"desktop"` | `desktop` or `mobile` |
 
-**Returns:** `results[]` (title, link, abstract snippet, authors, journal, year), `total`
+**Returns:** `articles[]` (title, link, abstract snippet, author byline with venue and year, `Cited by N`)
 
 ---
 
@@ -255,6 +260,118 @@ Use to find product prices and availability, compare by rating and review count,
 | `device` | string | `"desktop"` | `desktop` or `mobile` |
 
 **Returns:** `products[]` (title, price, asin, rating_stars, review_count, link, img_url, prime, bestseller, is_sponsor), `ads[]`
+
+---
+
+### `reddit_subreddit_posts`
+
+List posts from a subreddit.
+
+Use to see what a community is discussing right now, pull the top posts of a week or
+month, or gather sentiment on a product or topic. Each post carries its `id`, which
+you can hand to `reddit_post` for the full body, or `reddit_post_comments` for the discussion.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `subreddit` * | string | — | Subreddit name, with or without the `r/` prefix (`python`, `r/AskReddit`) |
+| `limit` | integer | `25` | Number of posts (1–100) |
+| `sort` | string | `"hot"` | `hot` `new` `top` `rising` `controversial` |
+| `t` | string | `null` | Time window for `top`/`controversial`: `hour` `day` `week` `month` `year` `all` |
+| `after` | string | `null` | Pagination cursor — the `Next page` value from a previous call |
+
+**Returns:** numbered posts with subreddit, author, score, comment count, timestamp,
+flair, permalink, post `id`, outbound link, and a body snippet, plus the next-page cursor.
+
+---
+
+### `reddit_subreddit_about`
+
+Get a subreddit's own metadata rather than its posts.
+
+Use to size up a community: subscriber count, users online, creation date, whether it
+is public/restricted/private, and its self-description.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `subreddit` * | string | — | Subreddit name, with or without the `r/` prefix |
+
+**Returns:** display name, title, subscribers, active users, creation date, type,
+language, NSFW/quarantine flags, URL, public description, and sidebar text.
+
+The Serply endpoint takes no query parameters, so this tool exposes none.
+
+---
+
+### `reddit_user_posts`
+
+Fetch a Reddit account's submission and comment history.
+
+Use to understand who someone is on Reddit — what they post about, which communities
+they are active in, and what they recently said. Submissions and comments come back in
+one timeline; comments show the thread they were left on.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `username` * | string | — | Account name, with or without the `u/` prefix (`spez`, `u/spez`) |
+| `limit` | integer | `25` | Number of items (1–100) |
+| `sort` | string | `"new"` | `hot` `new` `top` `controversial` |
+| `t` | string | `null` | Time window for `top`/`controversial` |
+| `after` | string | `null` | Pagination cursor |
+
+**Returns:** a numbered timeline of posts (t3) and comments (t1) with scores,
+timestamps, subreddits, permalinks, and body snippets, plus the next-page cursor.
+
+---
+
+### `reddit_post`
+
+Read one post's full content.
+
+Use when you have a post id or Reddit URL and want what the post actually says. The
+listing tools truncate bodies to a ~400 character snippet; this returns the complete
+self-text in Reddit's own markdown — headings, lists, links, code blocks intact.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `post_id` * | string | — | Post id from the URL — `1vfemi1` in `reddit.com/r/Python/comments/1vfemi1/…`. A `t3_` prefix is accepted |
+| `with_comments` | boolean | `false` | Also render the comment tree under the post |
+| `sort` | string | `"confidence"` | Comment ordering, when `with_comments` is true |
+| `max_depth` | integer | `3` | Levels of nested replies to render (0–10) |
+
+**Returns:** markdown — an `#` title, an italic metadata line (subreddit, author, score,
+comment count, timestamp), a bullet list with the permalink and id, then the body.
+
+Link posts have an empty body by design; their content is the `links to` URL, which you
+can pass to `scrape_url`.
+
+An id that does not exist comes back as a plain `No post found for id …` answer rather
+than a tool error, so a client will not retry it.
+
+---
+
+### `reddit_post_comments`
+
+Read the comment thread on a Reddit post.
+
+Use after `reddit_subreddit_posts`, `reddit_user_posts`, or a web search surfaces a
+thread worth reading. Returns the post plus its comment tree, so you see what people
+actually said instead of just the title.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `post_id` * | string | — | Post id from the URL — `1vfemi1` in `reddit.com/r/Python/comments/1vfemi1/…`. A `t3_` prefix is accepted |
+| `sort` | string | `"confidence"` | `confidence` (Reddit's "best") `top` `new` `controversial` `old` `qa` |
+| `max_depth` | integer | `3` | Levels of nested replies to render (0–10) |
+
+**Returns:** the post (title, author, score, timestamp, link, full body) followed by the
+comment tree, indented by depth. Branches Reddit did not inline are marked
+`… N more replies not loaded`.
+
+> **Note:** this endpoint returns Reddit's two-element array (`[post, comments]`) rather
+> than a single object; the client normalizes that before the tool renders it.
+
+Reddit responses are cached by Serply for 10 minutes, and cached responses do not
+consume credits.
 
 ---
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import urllib.parse
+from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import FastMCP
@@ -12,12 +13,19 @@ from pydantic import Field
 from serply_mcp.auth import check_ssrf
 from serply_mcp.client import SerplyClient
 from serply_mcp.config import Settings
-from serply_mcp.errors import SerplyError
+from serply_mcp.errors import NotFoundError, SerplyError
 
 ProxyLocation = Literal[
     "US", "EU", "CA", "IE", "GB", "FR", "DE", "SE", "IN", "JP", "KR", "SG", "AU", "BR"
 ]
 Device = Literal["desktop", "mobile"]
+
+ListingSort = Literal["hot", "new", "top", "rising", "controversial"]
+UserSort = Literal["hot", "new", "top", "controversial"]
+CommentSort = Literal["confidence", "top", "new", "controversial", "old", "qa"]
+TimeWindow = Literal["hour", "day", "week", "month", "year", "all"]
+
+REDDIT_WEB = "https://www.reddit.com"
 
 
 def _clean_url(url: str) -> str:
@@ -30,8 +38,238 @@ def _clean_url(url: str) -> str:
     return decoded
 
 
+# ── Reddit helpers ────────────────────────────────────────────────────────────
+
+def _strip_prefix(value: str, *prefixes: str) -> str:
+    """Accept `r/python`, `/r/python`, `t3_1vfemi1`, … and return the bare name."""
+    stripped = value.strip().lstrip("/")
+    for prefix in prefixes:
+        if stripped.lower().startswith(prefix):
+            return stripped[len(prefix):]
+    return stripped
+
+
+def _reddit_path(*segments: str, **params: Any) -> str:
+    """Build a /v1/reddit path, percent-encoding each segment as one path part."""
+    encoded = "/".join(urllib.parse.quote(s, safe="") for s in segments)
+    query = {k: v for k, v in params.items() if v is not None}
+    qs = f"?{urllib.parse.urlencode(query)}" if query else ""
+    return f"/v1/reddit/{encoded}{qs}"
+
+
+def _children(payload: Any) -> list[dict[str, Any]]:
+    """Pull `data.children` out of a Reddit Listing envelope, defensively."""
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return []
+    children = data.get("children")
+    if not isinstance(children, list):
+        return []
+    return [c for c in children if isinstance(c, dict)]
+
+
+def _after_cursor(payload: Any) -> str:
+    if isinstance(payload, dict):
+        data = payload.get("data")
+        if isinstance(data, dict) and data.get("after"):
+            return str(data["after"])
+    return ""
+
+
+def _fmt_epoch(value: Any) -> str:
+    """Reddit timestamps are float epoch seconds; render them as UTC."""
+    try:
+        return datetime.fromtimestamp(float(value), tz=UTC).strftime("%Y-%m-%d %H:%M UTC")
+    except (TypeError, ValueError, OSError, OverflowError):
+        return ""
+
+
+def _squash(text: str, limit: int) -> str:
+    """Collapse whitespace and truncate — Reddit selftext runs to thousands of chars."""
+    clean = " ".join(str(text).split())
+    if len(clean) <= limit:
+        return clean
+    return clean[: limit - 1].rstrip() + "…"
+
+
+def _markdown_body(text: Any, limit: int) -> list[str]:
+    """Keep a body as the markdown Reddit stored it, rather than squashing it flat.
+
+    selftext and comment bodies are already markdown — headings, lists, code
+    fences, links. Collapsing that to one line (what `_squash` does for
+    snippets) throws away the structure an agent would otherwise read for
+    free, so full-body renderings keep the line breaks and only truncate.
+    """
+    body = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not body:
+        return []
+    if len(body) > limit:
+        body = body[:limit].rstrip() + "\n\n…truncated…"
+    # Reddit escapes some punctuation for its own renderer; unescape the pairs
+    # that would otherwise show up as literal backslashes in the output.
+    for escaped, plain in (("\\_", "_"), ("\\*", "*"), ("\\[", "["), ("\\]", "]")):
+        body = body.replace(escaped, plain)
+    return body.split("\n")
+
+
+def _indent(lines: list[str], prefix: str) -> list[str]:
+    """Indent continuation lines, leaving blank lines blank."""
+    return [f"{prefix}{line}" if line.strip() else "" for line in lines]
+
+
+def _count(value: Any) -> str:
+    return f"{value:,}" if isinstance(value, int) else str(value or "")
+
+
+def _permalink(data: dict[str, Any]) -> str:
+    permalink = data.get("permalink")
+    if permalink:
+        return f"{REDDIT_WEB}{permalink}"
+    return str(data.get("url") or "")
+
+
+def _render_post(
+    data: dict[str, Any],
+    *,
+    index: int | None = None,
+    body_limit: int = 400,
+    heading: str = "###",
+    full_body: bool = False,
+) -> list[str]:
+    """One t3 (link/self post) record as a markdown block.
+
+    Markdown rather than indented plain text: every MCP client feeds this
+    string straight to a model, and headings/bullets/emphasis give it the
+    structure to tell title from metadata from body without guessing at
+    indentation.
+    """
+    title = str(data.get("title") or "").strip()
+    label = f"{index}. {title}" if index is not None else title
+    lines = [f"{heading} {label}"]
+
+    meta: list[str] = []
+    subreddit = data.get("subreddit_name_prefixed") or (
+        f"r/{data['subreddit']}" if data.get("subreddit") else ""
+    )
+    if subreddit:
+        meta.append(str(subreddit))
+    if data.get("author"):
+        meta.append(f"u/{data['author']}")
+    if data.get("score") is not None:
+        meta.append(f"▲ {_count(data.get('score'))}")
+    if data.get("num_comments") is not None:
+        meta.append(f"{_count(data.get('num_comments'))} comments")
+    created = _fmt_epoch(data.get("created_utc"))
+    if created:
+        meta.append(created)
+    if data.get("link_flair_text"):
+        meta.append(str(data["link_flair_text"]))
+    if data.get("over_18"):
+        meta.append("NSFW")
+    if data.get("stickied"):
+        meta.append("pinned")
+    if meta:
+        lines.append("")
+        lines.append(f"*{' · '.join(meta)}*")
+
+    details: list[str] = []
+    permalink = _permalink(data)
+    if permalink:
+        details.append(f"- URL: {permalink}")
+
+    post_id = data.get("id")
+    if post_id:
+        details.append(f"- id: {post_id}")
+
+    # Link posts point somewhere off Reddit; self posts point at themselves.
+    external = str(data.get("url") or "")
+    if external and not data.get("is_self") and external not in permalink:
+        details.append(f"- links to: {external}")
+
+    if details:
+        lines.append("")
+        lines.extend(details)
+
+    if full_body:
+        body_lines = _markdown_body(data.get("selftext"), body_limit)
+        if body_lines:
+            lines.append("")
+            lines.extend(body_lines)
+    else:
+        body = _squash(str(data.get("selftext") or ""), body_limit)
+        if body:
+            lines.append("")
+            lines.append(body)
+
+    return lines
+
+
+def _render_comment(
+    child: dict[str, Any],
+    depth: int,
+    max_depth: int,
+    out: list[str],
+    *,
+    body_limit: int = 700,
+    full_body: bool = False,
+) -> None:
+    """Append one comment and its replies as a nested markdown list item."""
+    data = child.get("data")
+    if not isinstance(data, dict):
+        return
+    indent = "  " * depth
+
+    if child.get("kind") == "more":
+        more = data.get("count") or len(data.get("children") or [])
+        if more:
+            out.append(f"{indent}- *… {more} more replies not loaded*")
+        return
+    if child.get("kind") != "t1":
+        return
+
+    header = f"{indent}- **u/{data.get('author') or '[deleted]'}**"
+    bits: list[str] = []
+    if data.get("score") is not None:
+        bits.append(f"▲ {_count(data.get('score'))}")
+    created = _fmt_epoch(data.get("created_utc"))
+    if created:
+        bits.append(created)
+    if data.get("is_submitter"):
+        bits.append("OP")
+    if data.get("stickied"):
+        bits.append("pinned")
+    if bits:
+        header += f" · {' · '.join(bits)}"
+    out.append(header)
+
+    # Two extra spaces keeps the body inside the bullet as markdown lazy
+    # continuation, so nesting survives whatever renders the string.
+    if full_body:
+        body_lines = _markdown_body(data.get("body"), body_limit)
+    else:
+        squashed = _squash(str(data.get("body") or ""), body_limit)
+        body_lines = [squashed] if squashed else []
+    if body_lines:
+        out.extend(_indent(body_lines, f"{indent}  "))
+
+    replies = data.get("replies")
+    if depth >= max_depth or not isinstance(replies, dict):
+        return
+    for reply in _children(replies):
+        _render_comment(
+            reply,
+            depth + 1,
+            max_depth,
+            out,
+            body_limit=body_limit,
+            full_body=full_body,
+        )
+
+
 def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> None:
-    """Register all 9 Serply tools and the account/usage resource on *mcp*."""
+    """Register all 14 Serply tools and the account/usage resource on *mcp*."""
 
     def _headers(proxy_location: str, device: str) -> dict[str, str]:
         return {"X-Proxy-Location": proxy_location, "X-User-Agent": device}
@@ -385,7 +623,9 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
         try:
             path = SerplyClient.build_query_path("/v1/scholar", query, num=num)
             data = await client.get(path, extra_headers=_headers(proxy_location, device))
-            results = data.get("results", [])
+            # /v1/scholar returns papers under `articles`; `results` is the
+            # (always empty) web-results slot of the shared response shape.
+            results = data.get("articles") or data.get("results") or []
 
             lines: list[str] = [f'{len(results)} academic results for "{query}"']
 
@@ -393,10 +633,19 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
                 title = (r.get("title") or "").strip()
                 link = r.get("link", "")
                 desc = (r.get("description") or "").strip()
+                author = r.get("author")
+                byline = (author.get("names") or "").strip() if isinstance(author, dict) else ""
+                extras = r.get("extras") or {}
+                citations = extras.get("citations") if isinstance(extras, dict) else None
+                cited_by = (citations.get("count") or "").strip() if isinstance(citations, dict) else ""
                 lines.append(f"\n{i}. {title}")
                 lines.append(f"   {link}")
+                if byline:
+                    lines.append(f"   {byline}")
                 if desc:
                     lines.append(f"   {desc}")
+                if cited_by:
+                    lines.append(f"   {cited_by}")
 
             if not results:
                 lines.append("\nNo academic results found.")
@@ -517,6 +766,382 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
 
             header = f"[Scraped {final_url} — {response_type}, {len(content):,} chars, sha256:{content_hash[:8]}]"
             return f"{header}\n\n{content}"
+        except SerplyError as exc:
+            raise ToolError(str(exc)) from exc
+
+    # ── reddit ────────────────────────────────────────────────────────────────
+
+    @mcp.tool()
+    async def reddit_subreddit_posts(
+        subreddit: Annotated[
+            str,
+            Field(
+                pattern=r"^(?:/?r/)?[A-Za-z0-9][A-Za-z0-9_]{1,20}$",
+                description="Subreddit name, with or without the 'r/' prefix — e.g. 'python' or 'r/AskReddit'.",
+            ),
+        ],
+        limit: Annotated[int, Field(ge=1, le=100, description="Number of posts to return (1–100).")] = 25,
+        sort: Annotated[ListingSort, Field(description="Listing order.")] = "hot",
+        t: Annotated[
+            TimeWindow | None,
+            Field(description="Time window — only meaningful for sort='top' or 'controversial'. Defaults to all-time."),
+        ] = None,
+        after: Annotated[
+            str | None,
+            Field(
+                max_length=64,
+                pattern=r"^[A-Za-z0-9_]+$",
+                description="Pagination cursor — pass the 'Next page' value from a previous call.",
+            ),
+        ] = None,
+    ) -> str:
+        """List posts from a subreddit via the Serply Reddit API.
+
+        Use this to see what a community is currently discussing: trending posts in
+        r/python, top-of-the-week in r/MachineLearning, new posts in a niche subreddit,
+        or the general sentiment around a product or topic.
+
+        Each post includes title, author, score, comment count, timestamp, permalink,
+        post id, and a snippet of the body. Feed a post id to `reddit_post` to read
+        the full body, or to `reddit_post_comments` to read the discussion.
+
+        Use `sort="top"` with `t="week"`/`"month"`/`"year"` for the best-of over a period.
+        Paginate by passing the returned cursor back as `after`.
+        """
+        try:
+            name = _strip_prefix(subreddit, "r/")
+            path = _reddit_path("subreddit", name, limit=limit, sort=sort, t=t, after=after)
+            data = await client.get(path)
+            children = _children(data)
+
+            window = f", t={t}" if t else ""
+            lines: list[str] = [f"## {len(children)} posts from r/{name} (sort={sort}{window})"]
+
+            rank = 0
+            for child in children:
+                post = child.get("data")
+                if child.get("kind") != "t3" or not isinstance(post, dict):
+                    continue
+                rank += 1
+                lines.append("")
+                lines.extend(_render_post(post, index=rank))
+
+            if not rank:
+                lines.append("\nNo posts found. The subreddit may be empty, private, or banned.")
+
+            cursor = _after_cursor(data)
+            if cursor:
+                lines.append(f"\nNext page: after={cursor}")
+
+            return "\n".join(lines)
+        except SerplyError as exc:
+            raise ToolError(str(exc)) from exc
+
+    @mcp.tool()
+    async def reddit_subreddit_about(
+        subreddit: Annotated[
+            str,
+            Field(
+                pattern=r"^(?:/?r/)?[A-Za-z0-9][A-Za-z0-9_]{1,20}$",
+                description="Subreddit name, with or without the 'r/' prefix.",
+            ),
+        ],
+    ) -> str:
+        """Get a subreddit's metadata (subscribers, description, rules blurb) via Serply.
+
+        Use this to size up a community before or after reading its posts: how many
+        subscribers it has, how many people are online, when it was created, whether
+        it is public/restricted/private, and what it says it is about.
+
+        Takes no listing options — it describes the subreddit itself, not its posts.
+        """
+        try:
+            name = _strip_prefix(subreddit, "r/")
+            data = await client.get(_reddit_path("subreddit", name, "about"))
+            about = data.get("data")
+            if not isinstance(about, dict):
+                return f"No metadata returned for r/{name}."
+
+            display = about.get("display_name_prefixed") or f"r/{name}"
+            title = str(about.get("title") or "").strip()
+            lines: list[str] = [f"## {display}" + (f" — {title}" if title else "")]
+
+            meta: list[str] = []
+            if about.get("subscribers") is not None:
+                meta.append(f"{_count(about.get('subscribers'))} subscribers")
+            if about.get("active_user_count") is not None:
+                meta.append(f"{_count(about.get('active_user_count'))} online")
+            created = _fmt_epoch(about.get("created_utc"))
+            if created:
+                meta.append(f"created {created}")
+            if about.get("subreddit_type"):
+                meta.append(str(about["subreddit_type"]))
+            if about.get("lang"):
+                meta.append(str(about["lang"]))
+            if about.get("over18"):
+                meta.append("NSFW")
+            if about.get("quarantine"):
+                meta.append("quarantined")
+            if meta:
+                lines.append("")
+                lines.append(f"*{' · '.join(meta)}*")
+
+            url = about.get("url")
+            if url:
+                lines.append("")
+                lines.append(f"- URL: {REDDIT_WEB}{url}")
+
+            public_description = _squash(str(about.get("public_description") or ""), 600)
+            if public_description:
+                lines.append(f"\n{public_description}")
+
+            raw_description = str(about.get("description") or "")
+            if raw_description and _squash(raw_description, 1500) != public_description:
+                lines.append("\n### Sidebar")
+                lines.append("")
+                lines.extend(_markdown_body(raw_description, 1500))
+
+            return "\n".join(lines)
+        except SerplyError as exc:
+            raise ToolError(str(exc)) from exc
+
+    @mcp.tool()
+    async def reddit_user_posts(
+        username: Annotated[
+            str,
+            Field(
+                pattern=r"^(?:/?u/)?[A-Za-z0-9][A-Za-z0-9_-]{1,19}$",
+                description="Reddit account name, with or without the 'u/' prefix — e.g. 'spez'.",
+            ),
+        ],
+        limit: Annotated[int, Field(ge=1, le=100, description="Number of items to return (1–100).")] = 25,
+        sort: Annotated[UserSort, Field(description="Ordering of the user's history.")] = "new",
+        t: Annotated[
+            TimeWindow | None,
+            Field(description="Time window — only meaningful for sort='top' or 'controversial'."),
+        ] = None,
+        after: Annotated[
+            str | None,
+            Field(
+                max_length=64,
+                pattern=r"^[A-Za-z0-9_]+$",
+                description="Pagination cursor from a previous call.",
+            ),
+        ] = None,
+    ) -> str:
+        """Fetch a Reddit user's post and comment history via Serply.
+
+        Use this to understand who someone is on Reddit: what they post about, which
+        communities they are active in, and what they have said recently. Useful for
+        vetting a source, following a domain expert, or tracing a claim back to context.
+
+        Returns both submissions (t3) and comments (t1) in one timeline, newest first
+        by default. Comments show the thread they were left on.
+        """
+        try:
+            name = _strip_prefix(username, "u/")
+            path = _reddit_path("user", name, limit=limit, sort=sort, t=t, after=after)
+            data = await client.get(path)
+            children = _children(data)
+
+            window = f", t={t}" if t else ""
+            lines: list[str] = [f"## {len(children)} items from u/{name} (sort={sort}{window})"]
+
+            rank = 0
+            for child in children:
+                item = child.get("data")
+                if not isinstance(item, dict):
+                    continue
+                kind = child.get("kind")
+                if kind == "t3":
+                    rank += 1
+                    lines.append("")
+                    lines.extend(_render_post(item, index=rank))
+                elif kind == "t1":
+                    rank += 1
+                    lines.append("")
+                    link_title = str(item.get("link_title") or "").strip()
+                    subreddit = item.get("subreddit_name_prefixed") or (
+                        f"r/{item['subreddit']}" if item.get("subreddit") else ""
+                    )
+                    lines.append(f"### {rank}. Comment on: {link_title or '(unknown thread)'}")
+
+                    meta: list[str] = [str(subreddit)] if subreddit else []
+                    if item.get("score") is not None:
+                        meta.append(f"▲ {_count(item.get('score'))}")
+                    created = _fmt_epoch(item.get("created_utc"))
+                    if created:
+                        meta.append(created)
+                    if meta:
+                        lines.append("")
+                        lines.append(f"*{' · '.join(meta)}*")
+                    permalink = _permalink(item)
+                    if permalink:
+                        lines.append("")
+                        lines.append(f"- URL: {permalink}")
+                    body = _squash(str(item.get("body") or ""), 400)
+                    if body:
+                        lines.append("")
+                        lines.append(body)
+
+            if not rank:
+                lines.append("\nNo activity found. The account may be suspended, deleted, or empty.")
+
+            cursor = _after_cursor(data)
+            if cursor:
+                lines.append(f"\nNext page: after={cursor}")
+
+            return "\n".join(lines)
+        except SerplyError as exc:
+            raise ToolError(str(exc)) from exc
+
+    @mcp.tool()
+    async def reddit_post_comments(
+        post_id: Annotated[
+            str,
+            Field(
+                pattern=r"^(?:t3_)?[A-Za-z0-9]{4,12}$",
+                description="Reddit post id from the URL — e.g. '1vfemi1' in reddit.com/r/Python/comments/1vfemi1/…. The 't3_' prefix is accepted.",
+            ),
+        ],
+        sort: Annotated[CommentSort, Field(description="Comment ordering. 'confidence' is Reddit's default 'best'.")] = "confidence",
+        max_depth: Annotated[int, Field(ge=0, le=10, description="How many levels of nested replies to render.")] = 3,
+    ) -> str:
+        """Read the comment thread on a Reddit post via Serply.
+
+        Use this after `reddit_subreddit_posts`, `reddit_user_posts`, or a web search
+        turns up a Reddit thread worth reading: it returns the post itself plus its
+        comment tree, so you can see what people actually said rather than just the title.
+
+        Nested replies are indented; branches Reddit did not inline are marked as
+        "more replies not loaded". Sorting accepts Reddit's own values — 'confidence'
+        (best), 'top', 'new', 'controversial', 'old', 'qa'.
+        """
+        try:
+            ident = _strip_prefix(post_id, "t3_")
+            data = await client.get(_reddit_path("comments", ident, sort=sort))
+
+            # Reddit answers /comments/{id} with [post listing, comment
+            # listing], which the API wraps as {"cached", "data"};
+            # SerplyClient normalises both under "listings". Sort children by
+            # kind instead of trusting the order, so a single-listing response
+            # (or a reordered one) still renders.
+            listings = data.get("listings")
+            if not isinstance(listings, list):
+                listings = [data]
+
+            posts: list[dict[str, Any]] = []
+            comments: list[dict[str, Any]] = []
+            for listing in listings:
+                for child in _children(listing):
+                    if child.get("kind") == "t3":
+                        posts.append(child)
+                    else:
+                        comments.append(child)
+
+            lines: list[str] = []
+            if posts:
+                post = posts[0].get("data")
+                if isinstance(post, dict):
+                    lines.extend(
+                        _render_post(post, body_limit=2000, heading="#", full_body=True)
+                    )
+                    lines.append("")
+
+            rendered: list[str] = []
+            for child in comments:
+                _render_comment(child, 0, max_depth, rendered)
+
+            if rendered:
+                top_level = sum(1 for c in comments if c.get("kind") == "t1")
+                lines.append(f"## Comments ({top_level} top-level, sort={sort})")
+                lines.append("")
+                lines.extend(rendered)
+            else:
+                lines.append("No comments on this post.")
+
+            return "\n".join(lines).rstrip()
+        except SerplyError as exc:
+            raise ToolError(str(exc)) from exc
+
+    @mcp.tool()
+    async def reddit_post(
+        post_id: Annotated[
+            str,
+            Field(
+                pattern=r"^(?:t3_)?[A-Za-z0-9]{4,12}$",
+                description="Reddit post id from the URL — e.g. '1vfemi1' in reddit.com/r/Python/comments/1vfemi1/…. The 't3_' prefix is accepted.",
+            ),
+        ],
+        with_comments: Annotated[
+            bool,
+            Field(description="Also render the comment tree under the post."),
+        ] = False,
+        sort: Annotated[
+            CommentSort,
+            Field(description="Comment ordering, when with_comments is true."),
+        ] = "confidence",
+        max_depth: Annotated[
+            int,
+            Field(ge=0, le=10, description="How many levels of nested replies to render."),
+        ] = 3,
+    ) -> str:
+        """Read one Reddit post's full content as markdown via Serply.
+
+        Use this when you have a post id or Reddit URL and want what the post
+        actually says: the complete self-text body, kept in Reddit's own markdown
+        (headings, lists, links, code blocks), plus title, subreddit, author,
+        score, comment count, and permalink.
+
+        Prefer this over `reddit_post_comments` when the body is what matters and
+        the discussion is not; the listing tools only return a ~400 character
+        snippet of the body. Set `with_comments=true` to get both in one call.
+
+        Link posts have an empty body by design — their content is the "links to"
+        URL, which you can then pass to `scrape_url`.
+        """
+        try:
+            ident = _strip_prefix(post_id, "t3_")
+            data = await client.get(
+                _reddit_path(
+                    "post",
+                    ident,
+                    sort=sort if with_comments else None,
+                    with_comments="true" if with_comments else None,
+                )
+            )
+            if not isinstance(data, dict) or not data.get("title"):
+                return f"No post found for id {ident}."
+
+            lines = _render_post(data, body_limit=20000, heading="#", full_body=True)
+
+            if with_comments:
+                raw = data.get("comments")
+                comments: list[dict[str, Any]] = (
+                    [c for c in raw if isinstance(c, dict)] if isinstance(raw, list) else []
+                )
+                rendered: list[str] = []
+                for child in comments:
+                    # A caller who asked for the post's content wants the
+                    # replies whole too, so allow more per comment than the
+                    # thread reader's 700-character default.
+                    _render_comment(
+                        child, 0, max_depth, rendered, body_limit=1500, full_body=True
+                    )
+                lines.append("")
+                if rendered:
+                    top_level = sum(1 for c in comments if c.get("kind") == "t1")
+                    lines.append(f"## Comments ({top_level} top-level, sort={sort})")
+                    lines.append("")
+                    lines.extend(rendered)
+                else:
+                    lines.append("No comments on this post.")
+
+            return "\n".join(lines).rstrip()
+        except NotFoundError:
+            # An id that does not exist is an answer, not a failure — returning
+            # it as text keeps the agent from retrying a lookup that cannot work.
+            return f"No post found for id {_strip_prefix(post_id, 't3_')}."
         except SerplyError as exc:
             raise ToolError(str(exc)) from exc
 

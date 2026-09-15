@@ -1,4 +1,4 @@
-"""Tests for all 9 Serply MCP tools (tools.py)."""
+"""Tests for all 13 Serply MCP tools (tools.py)."""
 from __future__ import annotations
 
 import unittest.mock as mock
@@ -329,16 +329,42 @@ async def test_google_jobs_tool_error(test_settings, mock_serply):
 
 @pytest.mark.asyncio
 async def test_google_scholar_search(test_settings, mock_serply):
+    # the real /v1/scholar shape: papers live under `articles`, `results` is
+    # the empty web-results slot of the shared response envelope
     mock_serply.get(url__regex=r".*/v1/scholar/.*").mock(return_value=httpx.Response(200, json={
-        "results": [{"title": "Attention Is All You Need", "link": "https://arxiv.org/abs/1706.03762", "description": "Vaswani et al. 2017"}],
-        "total": 1,
+        "articles": [{
+            "title": "Attention Is All You Need",
+            "link": "https://arxiv.org/abs/1706.03762",
+            "id": "2960712678066186980",
+            "description": "The dominant sequence transduction models are based on ...",
+            "author": {
+                "names": "A Vaswani, N Shazeer, N Parmar - Advances in neural information processing systems, 2017",
+                "authors": [{"name": "A Vaswani", "link": "https://scholar.google.com/citations?user=x"}],
+            },
+            "extras": {"citations": {"count": "Cited by 150000", "link": "https://scholar.google.com/scholar?cites=1"}},
+        }],
+        "results": [],
     }))
     async with SerplyClient(test_settings) as client:
         mcp = _make_mcp(test_settings, client)
         result = _unwrap(await mcp.call_tool("google_scholar_search", {"query": "transformer attention"}))
+    assert result.startswith('1 academic results for "transformer attention"')
     assert "Attention Is All You Need" in result
     assert "arxiv.org" in result
-    assert "Vaswani" in result
+    assert "A Vaswani, N Shazeer" in result
+    assert "Cited by 150000" in result
+    assert "No academic results" not in result
+
+
+@pytest.mark.asyncio
+async def test_google_scholar_search_empty(test_settings, mock_serply):
+    mock_serply.get(url__regex=r".*/v1/scholar/.*").mock(return_value=httpx.Response(200, json={
+        "articles": [], "results": [],
+    }))
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("google_scholar_search", {"query": "zzz"}))
+    assert "No academic results found." in result
 
 
 @pytest.mark.asyncio
@@ -400,6 +426,422 @@ async def test_amazon_product_tool_error(test_settings, mock_serply):
         mcp = _make_mcp(test_settings, client)
         with pytest.raises(ToolError):
             await mcp.call_tool("amazon_product_search", {"query": "test"})
+
+
+# ── reddit ────────────────────────────────────────────────────────────────────
+
+def _listing(*children, after=None):
+    return {"kind": "Listing", "data": {"after": after, "children": list(children)}}
+
+
+_POST = {
+    "kind": "t3",
+    "data": {
+        "id": "1vfemi1",
+        "title": "Showcase Thread",
+        "subreddit_name_prefixed": "r/Python",
+        "author": "AutoModerator",
+        "selftext": "Post all of your code/projects/showcases here",
+        "score": 42,
+        "num_comments": 118,
+        "created_utc": 1755302400,
+        "permalink": "/r/Python/comments/1vfemi1/showcase_thread/",
+        "is_self": True,
+        "stickied": True,
+    },
+}
+
+
+@pytest.mark.asyncio
+async def test_reddit_subreddit_posts(test_settings, mock_serply):
+    mock_serply.get(url__regex=r".*/v1/reddit/subreddit/python.*").mock(
+        return_value=httpx.Response(200, json=_listing(_POST, after="t3_1vpk70t"))
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool(
+            "reddit_subreddit_posts", {"subreddit": "python", "limit": 10, "sort": "top", "t": "week"}
+        ))
+
+    request_url = str(mock_serply.calls[0].request.url)
+    assert "/v1/reddit/subreddit/python?" in request_url
+    assert "limit=10" in request_url
+    assert "sort=top" in request_url
+    assert "t=week" in request_url
+    assert "Showcase Thread" in result
+    assert "u/AutoModerator" in result
+    assert "118 comments" in result
+    assert "id: 1vfemi1" in result
+    assert "https://www.reddit.com/r/Python/comments/1vfemi1/showcase_thread/" in result
+    assert "after=t3_1vpk70t" in result
+
+
+@pytest.mark.asyncio
+async def test_reddit_subreddit_posts_strips_r_prefix_and_omits_unset_params(
+    test_settings, mock_serply
+):
+    mock_serply.get(url__regex=r".*/v1/reddit/subreddit/.*").mock(
+        return_value=httpx.Response(200, json=_listing())
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("reddit_subreddit_posts", {"subreddit": "r/AskReddit"}))
+
+    request_url = str(mock_serply.calls[0].request.url)
+    assert "/v1/reddit/subreddit/AskReddit?" in request_url
+    assert "&t=" not in request_url
+    assert "after=" not in request_url
+    assert "No posts found" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"subreddit": "../../v1/search"},
+        {"subreddit": "a"},
+        {"subreddit": "python", "limit": 101},
+        {"subreddit": "python", "sort": "bogus"},
+        {"subreddit": "python", "t": "decade"},
+        {"subreddit": "python", "after": "t3_abc; drop"},
+    ],
+)
+async def test_reddit_subreddit_posts_validates_inputs(test_settings, mock_serply, arguments):
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        with pytest.raises(ToolError):
+            await mcp.call_tool("reddit_subreddit_posts", arguments)
+    assert not mock_serply.calls
+
+
+@pytest.mark.asyncio
+async def test_reddit_subreddit_about(test_settings, mock_serply):
+    mock_serply.get(url__regex=r".*/v1/reddit/subreddit/python/about.*").mock(
+        return_value=httpx.Response(200, json={
+            "kind": "t5",
+            "data": {
+                "display_name_prefixed": "r/Python",
+                "title": "Python",
+                "public_description": "News about the programming language Python.",
+                "subscribers": 1400000,
+                "active_user_count": 2100,
+                "created_utc": 1201233135,
+                "subreddit_type": "public",
+                "url": "/r/Python/",
+            },
+        })
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("reddit_subreddit_about", {"subreddit": "python"}))
+
+    assert mock_serply.calls[0].request.url.path == "/v1/reddit/subreddit/python/about"
+    assert "r/Python" in result
+    assert "1,400,000 subscribers" in result
+    assert "2,100 online" in result
+    assert "News about the programming language Python." in result
+
+
+@pytest.mark.asyncio
+async def test_reddit_subreddit_about_error(test_settings, mock_serply):
+    mock_serply.get(url__regex=r".*/v1/reddit/subreddit/.*/about.*").mock(
+        return_value=httpx.Response(404, json={"error": {"message": "no such subreddit"}})
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        with pytest.raises(ToolError):
+            await mcp.call_tool("reddit_subreddit_about", {"subreddit": "nosuchsub"})
+
+
+@pytest.mark.asyncio
+async def test_reddit_user_posts_renders_posts_and_comments(test_settings, mock_serply):
+    comment = {
+        "kind": "t1",
+        "data": {
+            "author": "spez",
+            "body": "Thanks for the feedback.",
+            "score": 7,
+            "created_utc": 1755302400,
+            "link_title": "Announcement thread",
+            "subreddit_name_prefixed": "r/announcements",
+            "permalink": "/r/announcements/comments/abc/x/def/",
+        },
+    }
+    mock_serply.get(url__regex=r".*/v1/reddit/user/spez.*").mock(
+        return_value=httpx.Response(200, json=_listing(_POST, comment))
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("reddit_user_posts", {"username": "u/spez"}))
+
+    request_url = str(mock_serply.calls[0].request.url)
+    assert "/v1/reddit/user/spez?" in request_url
+    assert "sort=new" in request_url
+    assert "Showcase Thread" in result
+    assert "Comment on: Announcement thread" in result
+    assert "Thanks for the feedback." in result
+
+
+@pytest.mark.asyncio
+async def test_reddit_user_posts_empty(test_settings, mock_serply):
+    mock_serply.get(url__regex=r".*/v1/reddit/user/.*").mock(
+        return_value=httpx.Response(200, json=_listing())
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("reddit_user_posts", {"username": "ghost"}))
+    assert "No activity found" in result
+
+
+@pytest.mark.asyncio
+async def test_reddit_post_comments_array_response(test_settings, mock_serply):
+    """The comments endpoint answers with a two-element JSON array, not an object."""
+    reply = {
+        "kind": "t1",
+        "data": {"author": "replier", "body": "Nested reply", "score": 3},
+    }
+    top = {
+        "kind": "t1",
+        "data": {
+            "author": "commenter",
+            "body": "Top level comment",
+            "score": 12,
+            "created_utc": 1755302400,
+            "is_submitter": True,
+            "replies": _listing(reply),
+        },
+    }
+    more = {"kind": "more", "data": {"count": 5, "children": ["a", "b"]}}
+    mock_serply.get(url__regex=r".*/v1/reddit/comments/1vfemi1.*").mock(
+        return_value=httpx.Response(200, json=[_listing(_POST), _listing(top, more)])
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("reddit_post_comments", {"post_id": "t3_1vfemi1"}))
+
+    request_url = str(mock_serply.calls[0].request.url)
+    assert "/v1/reddit/comments/1vfemi1?" in request_url
+    assert "sort=confidence" in request_url
+    assert "limit=" not in request_url
+    assert "Showcase Thread" in result
+    assert "u/commenter" in result
+    assert "OP" in result
+    assert "Top level comment" in result
+    assert "  Nested reply" in result
+    assert "5 more replies not loaded" in result
+
+
+@pytest.mark.asyncio
+async def test_reddit_post_comments_cached_envelope(test_settings, mock_serply):
+    """What the API actually returns: the array wrapped as {"cached", "data"}.
+
+    The array fixture above passed while production reported "No comments on
+    this post." on every thread, so exercise the shape that ships.
+    """
+    top = {"kind": "t1", "data": {"author": "commenter", "body": "Top level comment"}}
+    mock_serply.get(url__regex=r".*/v1/reddit/comments/.*").mock(
+        return_value=httpx.Response(
+            200, json={"cached": True, "data": [_listing(_POST), _listing(top)]}
+        )
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("reddit_post_comments", {"post_id": "1vfemi1"}))
+    assert "Showcase Thread" in result
+    assert "u/commenter" in result
+    assert "Top level comment" in result
+    assert "No comments on this post." not in result
+
+
+@pytest.mark.asyncio
+async def test_reddit_post_comments_respects_max_depth(test_settings, mock_serply):
+    deep = {"kind": "t1", "data": {"author": "deep", "body": "Too deep"}}
+    top = {"kind": "t1", "data": {"author": "top", "body": "Shallow", "replies": _listing(deep)}}
+    mock_serply.get(url__regex=r".*/v1/reddit/comments/.*").mock(
+        return_value=httpx.Response(200, json=[_listing(_POST), _listing(top)])
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool(
+            "reddit_post_comments", {"post_id": "1vfemi1", "max_depth": 0}
+        ))
+    assert "Shallow" in result
+    assert "Too deep" not in result
+
+
+@pytest.mark.asyncio
+async def test_reddit_post_comments_single_listing_and_no_comments(test_settings, mock_serply):
+    """A single-object response (no array wrapper) still renders the post."""
+    mock_serply.get(url__regex=r".*/v1/reddit/comments/.*").mock(
+        return_value=httpx.Response(200, json=_listing(_POST))
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("reddit_post_comments", {"post_id": "1vfemi1"}))
+    assert "Showcase Thread" in result
+    assert "No comments on this post." in result
+
+
+@pytest.mark.asyncio
+async def test_reddit_post_comments_error(test_settings, mock_serply):
+    mock_serply.get(url__regex=r".*/v1/reddit/comments/.*").mock(
+        return_value=httpx.Response(502, json={"error": {"message": "reddit proxy unavailable"}})
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        with pytest.raises(ToolError):
+            await mcp.call_tool("reddit_post_comments", {"post_id": "1vfemi1"})
+
+
+_POST_BODY = (
+    "## Heading\n\n"
+    "- first bullet\n"
+    "- second bullet\n\n"
+    "Closing paragraph with an escaped \\_underscore\\_."
+)
+
+
+@pytest.mark.asyncio
+async def test_reddit_post_returns_markdown_body(test_settings, mock_serply):
+    """The point of this tool: the body arrives as markdown, not squashed to a line."""
+    post = dict(_POST["data"], selftext=_POST_BODY)
+    mock_serply.get(url__regex=r".*/v1/reddit/post/1vfemi1.*").mock(
+        return_value=httpx.Response(200, json=post)
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("reddit_post", {"post_id": "t3_1vfemi1"}))
+
+    request_url = str(mock_serply.calls[0].request.url)
+    assert request_url.endswith("/v1/reddit/post/1vfemi1")
+    assert "with_comments" not in request_url
+    assert "# Showcase Thread" in result
+    assert "*r/Python · u/AutoModerator · ▲ 42 · 118 comments" in result
+    assert "- URL: https://www.reddit.com/r/Python/comments/1vfemi1/showcase_thread/" in result
+    assert "- id: 1vfemi1" in result
+    # Structure preserved: heading, bullets, and unescaped punctuation.
+    assert "## Heading" in result
+    assert "- first bullet\n- second bullet" in result
+    assert "escaped _underscore_." in result
+    assert "\\_" not in result
+
+
+@pytest.mark.asyncio
+async def test_reddit_post_with_comments(test_settings, mock_serply):
+    reply = {"kind": "t1", "data": {"author": "replier", "body": "Nested reply"}}
+    top = {
+        "kind": "t1",
+        "data": {
+            "author": "commenter",
+            "body": "Top level comment",
+            "score": 12,
+            "is_submitter": True,
+            "replies": _listing(reply),
+        },
+    }
+    post = dict(_POST["data"], comments=[top, {"kind": "more", "data": {"count": 5}}])
+    mock_serply.get(url__regex=r".*/v1/reddit/post/.*").mock(
+        return_value=httpx.Response(200, json=post)
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool(
+            "reddit_post", {"post_id": "1vfemi1", "with_comments": True, "sort": "top"}
+        ))
+
+    request_url = str(mock_serply.calls[0].request.url)
+    assert "with_comments=true" in request_url
+    assert "sort=top" in request_url
+    assert "## Comments (1 top-level, sort=top)" in result
+    assert "- **u/commenter** · ▲ 12 · OP" in result
+    assert "  Top level comment" in result
+    assert "  - **u/replier**" in result
+    assert "    Nested reply" in result
+    assert "5 more replies not loaded" in result
+
+
+@pytest.mark.asyncio
+async def test_reddit_post_with_comments_but_none_present(test_settings, mock_serply):
+    mock_serply.get(url__regex=r".*/v1/reddit/post/.*").mock(
+        return_value=httpx.Response(200, json=dict(_POST["data"], comments=[]))
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool(
+            "reddit_post", {"post_id": "1vfemi1", "with_comments": True}
+        ))
+    assert "No comments on this post." in result
+
+
+@pytest.mark.asyncio
+async def test_reddit_post_link_post_shows_external_url(test_settings, mock_serply):
+    post = dict(
+        _POST["data"],
+        selftext="",
+        is_self=False,
+        url="https://example.com/article",
+    )
+    mock_serply.get(url__regex=r".*/v1/reddit/post/.*").mock(
+        return_value=httpx.Response(200, json=post)
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("reddit_post", {"post_id": "1vfemi1"}))
+    assert "- links to: https://example.com/article" in result
+
+
+@pytest.mark.asyncio
+async def test_reddit_post_missing(test_settings, mock_serply):
+    mock_serply.get(url__regex=r".*/v1/reddit/post/.*").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("reddit_post", {"post_id": "1vfemi1"}))
+    assert "No post found for id 1vfemi1." in result
+
+
+@pytest.mark.asyncio
+async def test_reddit_post_404_is_an_answer_not_an_error(test_settings, mock_serply):
+    mock_serply.get(url__regex=r".*/v1/reddit/post/.*").mock(
+        return_value=httpx.Response(
+            404, json={"detail": "No Reddit post found for id zzzzzzz"}
+        )
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("reddit_post", {"post_id": "zzzzzzz"}))
+    assert "No post found for id zzzzzzz." in result
+    assert len(mock_serply.calls) == 1  # a 404 is not retried
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"post_id": "../../v1/search"},
+        {"post_id": "abc"},
+        {"post_id": "1vfemi1", "max_depth": 11},
+        {"post_id": "1vfemi1", "sort": "bogus"},
+    ],
+)
+async def test_reddit_post_validates_inputs(test_settings, mock_serply, arguments):
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        with pytest.raises(ToolError):
+            await mcp.call_tool("reddit_post", arguments)
+    assert not mock_serply.calls
+
+
+@pytest.mark.asyncio
+async def test_reddit_post_error(test_settings, mock_serply):
+    mock_serply.get(url__regex=r".*/v1/reddit/post/.*").mock(
+        return_value=httpx.Response(502, json={"error": {"message": "reddit proxy unavailable"}})
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        with pytest.raises(ToolError):
+            await mcp.call_tool("reddit_post", {"post_id": "1vfemi1"})
 
 
 # ── scrape_url ────────────────────────────────────────────────────────────────

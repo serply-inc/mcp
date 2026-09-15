@@ -111,6 +111,44 @@ def test_product_response_defaults():
     assert r.ads == []
 
 
+def test_reddit_listing_defaults():
+    from serply_mcp.models import RedditListing
+    listing = RedditListing()
+    assert listing.kind == "Listing"
+    assert listing.data.children == []
+    assert listing.data.after is None
+
+
+def test_reddit_listing_with_children():
+    from serply_mcp.models import RedditListing, RedditListingData, RedditThing
+    listing = RedditListing(
+        data=RedditListingData(
+            after="t3_1vpk70t",
+            children=[RedditThing(kind="t3", data={"title": "Showcase Thread"})],
+        )
+    )
+    assert listing.data.after == "t3_1vpk70t"
+    assert listing.data.children[0].data["title"] == "Showcase Thread"
+
+
+def test_reddit_about_defaults():
+    from serply_mcp.models import RedditAbout
+    about = RedditAbout()
+    assert about.kind == "t5"
+    assert about.data == {}
+
+
+def test_reddit_sort_tuples():
+    from serply_mcp.models import (
+        REDDIT_COMMENT_SORTS,
+        REDDIT_LISTING_SORTS,
+        REDDIT_TIME_WINDOWS,
+    )
+    assert "hot" in REDDIT_LISTING_SORTS
+    assert "confidence" in REDDIT_COMMENT_SORTS
+    assert len(REDDIT_TIME_WINDOWS) == 6
+
+
 def test_scrape_response_defaults():
     from serply_mcp.models import ScrapeResponse
     r = ScrapeResponse()

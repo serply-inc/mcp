@@ -115,7 +115,29 @@ class SerplyClient:
                 # the URL it asked for.
                 if "json" not in resp.headers.get("content-type", "").lower():
                     return {"content": resp.text}
-                return resp.json()  # type: ignore[no-any-return]
+                payload = resp.json()
+                # /v1/reddit/comments/{id} carries Reddit's own shape, which is
+                # a two-element *array* — [post listing, comment listing] — not
+                # an object. Every caller here is typed for a dict, so wrap the
+                # array under "listings" rather than let a list escape into
+                # tools that call .get().
+                if isinstance(payload, list):
+                    return {"listings": payload}
+                # In production that array does not arrive bare: the Reddit
+                # proxy wraps it as {"cached": bool, "data": [...]} on this one
+                # route, because you cannot hang a `cached` flag off a JSON
+                # array. The wrapper reached reddit_post_comments untouched, so
+                # data.get("listings") was None and every thread rendered as
+                # "No comments on this post." Unwrap it to the same "listings"
+                # shape. Guard on the absence of "kind" so a genuine Reddit
+                # object — {"kind": "Listing", "data": {...}} — is left alone.
+                if (
+                    isinstance(payload, dict)
+                    and "kind" not in payload
+                    and isinstance(payload.get("data"), list)
+                ):
+                    return {"listings": payload["data"]}
+                return payload  # type: ignore[no-any-return]
 
             # Parse error body
             try:
