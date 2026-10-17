@@ -29,6 +29,11 @@ def create_app(settings: Settings, client: SerplyClient) -> FastMCP:
         host=settings.mcp_http_host,
         port=settings.mcp_http_port,
         streamable_http_path=settings.mcp_http_path,
+        # No tool keeps per-session state, and stateful sessions failed in practice:
+        # many clients keep sending an Mcp-Session-Id after the 30-minute idle timeout
+        # reaped it, get 404 and never re-initialize (~40k 404s/day in Oct 2026).
+        # Stateless, every request stands alone, so a stale or missing session id works.
+        stateless_http=True,
     )
     register_tools(mcp, client, settings)
     return mcp

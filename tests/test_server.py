@@ -77,3 +77,28 @@ async def test_mcp_path_requires_key(test_settings):
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
         resp = await http.post("/mcp")
     assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_mcp_accepts_a_stale_session_id(test_settings):
+    """A client still holding a reaped session id must be served, not sent a 404."""
+    import httpx
+
+    client = SerplyClient(test_settings)
+    app = build_starlette_app(test_settings, client)
+
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
+            resp = await http.post(
+                "/mcp",
+                headers={
+                    "X-Api-Key": "test-api-key-1234567890",
+                    "Accept": "application/json, text/event-stream",
+                    "Mcp-Session-Id": "0123456789abcdef0123456789abcdef",
+                    "Mcp-Protocol-Version": "2025-06-18",
+                },
+                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            )
+    assert resp.status_code == 200
+    assert "google_search" in resp.text
