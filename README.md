@@ -16,7 +16,7 @@ Fourteen tools that give AI assistants real-time access to the web:
 
 | Tool | What it does |
 |---|---|
-| `google_search` | Google web search — organic results, featured snippets, and answer boxes |
+| `google_search` | Google web search — organic results, featured snippets, AI Overview with sources, ads, People also ask, related searches |
 | `google_maps_search` | Google Maps — structured local businesses, websites, ratings, coordinates, phone numbers, and hours |
 | `bing_search` | Bing web search — organic results, ads, and shopping results |
 | `google_video_search` | Google video search — results from YouTube and other video platforms |
@@ -93,7 +93,7 @@ Detailed descriptions for all 14 tools. Parameters marked `*` are required.
 
 ### `google_search`
 
-Search Google and return organic results, answer boxes, and featured snippets.
+Search Google and return organic results, answer boxes, featured snippets, Google's AI Overview, ads, "People also ask" questions, and related searches.
 
 Use this tool for factual lookups, recent events, product research, technical documentation, or anything that benefits from live Google results.
 
@@ -105,7 +105,7 @@ Use this tool for factual lookups, recent events, product research, technical do
 | `proxy_location` | string | `"US"` | Country for geo-specific results: `US` `EU` `CA` `IE` `GB` `FR` `DE` `SE` `IN` `JP` `KR` `SG` `AU` `BR` |
 | `device` | string | `"desktop"` | Emulated device type: `desktop` or `mobile` |
 
-**Returns:** `results[]` (title, link, description), `total`, `answer` (featured snippet if present)
+**Returns:** `results[]` (title, link, description), `total`, `answer` (featured snippet if present), and when the page has them: the AI Overview text with numbered sources (each the real page URL, not a Google redirect), ads (title and advertiser URL), "People also ask" questions, and related searches. Sections the page did not have are left out.
 
 ---
 

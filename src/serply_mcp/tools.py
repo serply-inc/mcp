@@ -38,6 +38,32 @@ def _clean_url(url: str) -> str:
     return decoded
 
 
+def _render_ai_overview(overview: Any, text_limit: int = 2000) -> list[str]:
+    """Google's AI Overview as text plus numbered sources; [] when the page had none.
+
+    The text keeps its line breaks (the overview is often a numbered list) and is
+    cut at *text_limit*; each source carries the resolved URL, not a Google redirect.
+    """
+    if not isinstance(overview, dict):
+        return []
+    meta = overview.get("metadata") or {}
+    text = str(meta.get("text") or overview.get("description") or "").strip()
+    if len(text) > text_limit:
+        text = text[: text_limit - 1].rstrip() + "…"
+    sources = [s for s in meta.get("sources") or [] if isinstance(s, dict) and s.get("url")]
+    if not text and not sources:
+        return []
+    lines = ["\nAI Overview:"]
+    if text:
+        lines.append(text)
+    if sources:
+        lines.append("Sources:")
+        for i, s in enumerate(sources, 1):
+            title = str(s.get("title") or s.get("domain") or "").strip()
+            lines.append(f"  [{s.get('position') or i}] {title} - {s['url']}")
+    return lines
+
+
 # ── Reddit helpers ────────────────────────────────────────────────────────────
 
 def _strip_prefix(value: str, *prefixes: str) -> str:
@@ -289,7 +315,9 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
         code examples, or anything that benefits from live Google results.
 
         Returns up to `num` organic results, each with title, URL, and snippet.
-        Also includes a direct answer when Google surfaces a featured snippet.
+        Also includes a direct answer when Google surfaces a featured snippet,
+        Google's AI Overview with its numbered sources, ads (advertiser URL),
+        "People also ask" questions, and related searches when the page has them.
 
         Use `start` + `num` to paginate: start=0 is page 1, start=10 is page 2, etc.
         Use `proxy_location` to get geo-specific results (e.g. "GB" for UK results).
@@ -310,6 +338,8 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
             if answer:
                 lines.append(f"\nAnswer: {answer}")
 
+            lines.extend(_render_ai_overview(data.get("ai_overview")))
+
             for i, r in enumerate(results, 1):
                 title = (r.get("title") or "").strip()
                 link = r.get("link", "")
@@ -321,6 +351,26 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
 
             if not results:
                 lines.append("\nNo results found.")
+
+            ads = [ad for ad in data.get("ads") or [] if isinstance(ad, dict)]
+            if ads:
+                lines.append(f"\nAds ({len(ads)}):")
+                for ad in ads:
+                    lines.append(f"  - {(ad.get('title') or '').strip()}")
+                    lines.append(f"    {ad.get('link', '')}")
+
+            questions = data.get("related_questions") or data.get("people_also_ask") or []
+            questions = [str(q.get("question") or q.get("title") or "") if isinstance(q, dict) else str(q) for q in questions]
+            questions = [q for q in questions if q.strip()]
+            if questions:
+                lines.append("\nPeople also ask:")
+                lines.extend(f"  - {q.strip()}" for q in questions)
+
+            related = (data.get("related_searches") or {}).get("text") or []
+            related = [r.get("title", "").strip() for r in related if isinstance(r, dict) and r.get("title")]
+            if related:
+                lines.append("\nRelated searches:")
+                lines.extend(f"  - {r}" for r in related)
 
             return "\n".join(lines)
         except SerplyError as exc:

@@ -75,6 +75,53 @@ async def test_google_search_no_results(test_settings, mock_serply):
 
 
 @pytest.mark.asyncio
+async def test_google_search_serp_features(test_settings, mock_serply):
+    mock_serply.get(url__regex=r".*/v1/search/.*").mock(return_value=httpx.Response(200, json={
+        "results": [{"title": "Python For Beginners", "link": "https://www.python.org/about/gettingstarted/"}],
+        "ai_overview": {
+            "title": "AI Overview",
+            "description": "short",
+            "metadata": {
+                "present": True,
+                "text": "Top options:\n1. Link My Books",
+                "sources": [
+                    {"position": 1, "title": "Link My Books vs A2X", "url": "https://linkmybooks.com/a2x", "domain": "linkmybooks.com"},
+                    {"position": 2, "title": "", "url": "", "domain": None},
+                ],
+            },
+        },
+        "ads": [{"title": "Learn Python", "link": "https://www.coursera.org/",
+                 "metadata": {"tracking_url": "http://www.google.com/aclk?sa=L"}}],
+        "related_questions": ["Is Python hard to learn?"],
+        "related_searches": {"text": [{"title": "Python free course", "link": "https://www.google.com/search?q=Python+free+course"}]},
+    }))
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("google_search", {"query": "learn python"}))
+    assert "AI Overview:\nTop options:\n1. Link My Books" in result
+    assert "[1] Link My Books vs A2X - https://linkmybooks.com/a2x" in result
+    assert "[2]" not in result
+    assert "Ads (1):" in result and "https://www.coursera.org/" in result
+    assert "aclk" not in result
+    assert "People also ask:\n  - Is Python hard to learn?" in result
+    assert "Related searches:\n  - Python free course" in result
+
+
+@pytest.mark.asyncio
+async def test_google_search_no_serp_features(test_settings, mock_serply):
+    mock_serply.get(url__regex=r".*/v1/search/.*").mock(return_value=httpx.Response(200, json={
+        "results": [{"title": "A", "link": "https://a.com"}],
+        "ai_overview": None, "ads": [], "related_questions": [],
+        "related_searches": {"images": [], "text": []},
+    }))
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap(await mcp.call_tool("google_search", {"query": "a"}))
+    for section in ("AI Overview", "Ads (", "People also ask", "Related searches"):
+        assert section not in result
+
+
+@pytest.mark.asyncio
 async def test_google_search_tool_error_on_failure(test_settings, mock_serply):
     mock_serply.get(url__regex=r".*/v1/search/.*").mock(return_value=httpx.Response(404, json={"error": {"message": "missing"}}))
     async with SerplyClient(test_settings) as client:
