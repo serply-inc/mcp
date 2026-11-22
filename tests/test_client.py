@@ -288,3 +288,29 @@ def test_safe_log_headers_case_insensitive():
 async def test_aclose_idempotent(test_settings):
     c = SerplyClient(test_settings)
     await c.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [500, 502, 504])
+async def test_post_is_not_retried_when_the_api_may_have_started_it(test_settings, mock_serply, status):
+    # A retried GEO POST that the API had already accepted would start (and bill) a second job.
+    route = mock_serply.post("/v1/geo/visibility").mock(
+        return_value=httpx.Response(status, json={"error": {"message": "x"}})
+    )
+    async with SerplyClient(test_settings) as c:
+        with pytest.raises(SerplyError):
+            await c.post("/v1/geo/visibility", json={"keywords": ["k"]})
+    assert route.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_post_is_retried_on_503_then_succeeds(test_settings, mock_serply):
+    route = mock_serply.post("/v1/geo/visibility")
+    route.side_effect = [
+        httpx.Response(503, json={"error": {"message": "busy"}}),
+        httpx.Response(202, json={"job_id": "abcdefgh", "status": "queued"}),
+    ]
+    async with SerplyClient(test_settings) as c:
+        result = await c.post("/v1/geo/visibility", json={"keywords": ["k"]})
+    assert result["job_id"] == "abcdefgh"
+    assert route.call_count == 2

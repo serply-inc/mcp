@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import urllib.parse
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
@@ -24,6 +25,9 @@ ListingSort = Literal["hot", "new", "top", "rising", "controversial"]
 UserSort = Literal["hot", "new", "top", "controversial"]
 CommentSort = Literal["confidence", "top", "new", "controversial", "old", "qa"]
 TimeWindow = Literal["hour", "day", "week", "month", "year", "all"]
+
+GeoProvider = Literal["all", "tool", "claude", "codex"]
+_JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 
 REDDIT_WEB = "https://www.reddit.com"
 
@@ -269,7 +273,7 @@ def _render_comment(
 
 
 def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> None:
-    """Register all 14 Serply tools and the account/usage resource on *mcp*."""
+    """Register all 16 Serply tools and the account/usage resource on *mcp*."""
 
     def _headers(proxy_location: str, device: str) -> dict[str, str]:
         return {"X-Proxy-Location": proxy_location, "X-User-Agent": device}
@@ -388,6 +392,119 @@ def register_tools(mcp: FastMCP, client: SerplyClient, settings: Settings) -> No
                 **data,
                 "summary": f"Found {len(places)} Google Maps places for '{query}'",
             }
+        except SerplyError as exc:
+            raise ToolError(str(exc)) from exc
+
+    @mcp.tool()
+    async def ai_visibility_start(
+        keywords: Annotated[
+            list[Annotated[str, Field(min_length=1, max_length=500)]],
+            Field(
+                min_length=1,
+                max_length=5,
+                description="1-5 prompts a user would ask an AI assistant (each up to 500 chars).",
+            ),
+        ],
+        provider: Annotated[
+            GeoProvider | list[GeoProvider],
+            Field(
+                description=(
+                    "Which AI engines to ask: 'all' (default), 'tool' (direct model API), "
+                    "'claude' (Claude Code), 'codex' (Codex CLI), or a list of those. "
+                    "Cost is 10 credits per provider; 'all' costs 30."
+                )
+            ),
+        ] = "all",
+        brand: Annotated[
+            str | None, Field(description="Your brand name to look for in the answers.", max_length=200)
+        ] = None,
+        url: Annotated[
+            str | None, Field(description="Your website URL; citations of it count as visibility.", max_length=2048)
+        ] = None,
+        competitors: Annotated[
+            list[str] | None,
+            Field(max_length=5, description="Up to 5 competitor domains to compare against."),
+        ] = None,
+        country: Annotated[
+            str | None,
+            Field(
+                min_length=2,
+                max_length=2,
+                pattern=r"^[A-Za-z]{2}$",
+                description="Two-letter country code for the question context, such as 'us'.",
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Start an AI Visibility (GEO) check: do AI assistants mention or cite your brand?
+
+        Asks the chosen AI engines your keywords (prompts a user would ask an AI
+        assistant) and analyses whether your brand/url and competitors are mentioned
+        or cited in the answers. This tool only STARTS the job and returns at once with
+        a `job_id`; call `ai_visibility_job` with it to poll for results (free).
+        A job takes about 15 seconds for 'tool' and up to a few minutes for the
+        'claude'/'codex' engines; poll every 10-20 seconds and give up after ~18 minutes.
+
+        Cost: 10 credits per provider selected ('all' = 30 credits), regardless of the
+        number of keywords (max 5). Polling costs nothing.
+        """
+        try:
+            body: dict[str, Any] = {"keywords": keywords, "provider": provider}
+            if brand:
+                body["brand"] = brand
+            if url:
+                body["url"] = url
+            if competitors:
+                body["competitors"] = competitors
+            if country:
+                body["country"] = country.lower()
+            data = await client.post("/v1/geo/visibility", json=body)
+            job_id = data.get("job_id", "")
+            credits = data.get("credits")
+            cost = f" Cost: {credits} credits." if credits is not None else ""
+            return {
+                **data,
+                "summary": (
+                    f"AI visibility job {job_id} {data.get('status', 'queued')} "
+                    f"({data.get('runs', '?')} runs).{cost} "
+                    f"Poll with ai_visibility_job(job_id='{job_id}') until status is done or failed."
+                ),
+            }
+        except SerplyError as exc:
+            raise ToolError(str(exc)) from exc
+
+    @mcp.tool()
+    async def ai_visibility_job(
+        job_id: Annotated[
+            str,
+            Field(description="The job_id returned by ai_visibility_start (8-64 chars: letters, digits, - _)."),
+        ],
+    ) -> dict[str, Any]:
+        """Get the status and results of an AI Visibility (GEO) job. Free; does not wait.
+
+        Returns the job with `status` (queued, running, done, failed), `completed` of
+        `runs`, a `summary` (visibility_score 0-100, by_provider scores, runs_ok,
+        runs_failed, mentioned_in, cited_in) and per-run `results` (provider, keyword,
+        answer, citations, analysis). If status is queued or running, call again in
+        10-20 seconds. Results are final once status is done or failed.
+        """
+        if not _JOB_ID_RE.fullmatch(job_id):
+            raise ToolError("Invalid job_id: expected 8-64 characters of letters, digits, '-' or '_'.")
+        try:
+            data = await client.get(f"/v1/geo/jobs/{urllib.parse.quote(job_id, safe='')}")
+            stats = data.get("summary") or {}
+            parts = [
+                f"Job {job_id}: {data.get('status', 'unknown')}",
+                f"{data.get('completed', 0)}/{data.get('runs', '?')} runs",
+            ]
+            if stats.get("visibility_score") is not None:
+                parts.append(f"visibility score {stats['visibility_score']}/100")
+            for key in ("mentioned_in", "cited_in"):
+                if stats.get(key) is not None:
+                    parts.append(f"{key} {stats[key]}")
+            text = ", ".join(parts)
+            if data.get("status") in ("queued", "running"):
+                text += ". Not finished; poll again in 10-20 seconds."
+            return {**data, "text_summary": text}
         except SerplyError as exc:
             raise ToolError(str(exc)) from exc
 

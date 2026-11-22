@@ -931,3 +931,122 @@ async def test_usage_resource_registered(test_settings):
         resources = await mcp.list_resources()
     uris = [str(r.uri) for r in resources]
     assert any("serply" in u and "usage" in u for u in uris)
+
+
+# -- ai_visibility_start / ai_visibility_job -----------------------------------
+
+_ACCEPTED = {
+    "job_id": "geo_abcdef123456",
+    "status": "queued",
+    "providers": ["tool"],
+    "keywords": ["best crm"],
+    "runs": 1,
+    "credits": 10,
+}
+
+
+@pytest.mark.asyncio
+async def test_ai_visibility_start_posts_json_without_none(test_settings, mock_serply):
+    route = mock_serply.post("/v1/geo/visibility").mock(
+        return_value=httpx.Response(202, json=_ACCEPTED)
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap_structured(
+            await mcp.call_tool("ai_visibility_start", {"keywords": ["best crm"], "brand": "Acme"})
+        )
+    import json
+
+    assert json.loads(route.calls[0].request.content) == {
+        "keywords": ["best crm"],
+        "provider": "all",
+        "brand": "Acme",
+    }
+    assert result["job_id"] == "geo_abcdef123456"
+    assert "ai_visibility_job" in result["summary"]
+    assert "10 credits" in result["summary"]
+
+
+@pytest.mark.asyncio
+async def test_ai_visibility_start_provider_list_and_limits(test_settings, mock_serply):
+    import json
+
+    route = mock_serply.post("/v1/geo/visibility").mock(
+        return_value=httpx.Response(202, json={**_ACCEPTED, "providers": ["tool", "claude"], "credits": 20})
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        await mcp.call_tool(
+            "ai_visibility_start",
+            {
+                "keywords": ["a"],
+                "provider": ["tool", "claude"],
+                "competitors": ["x.com"],
+                "country": "US",
+                "url": "https://acme.com",
+            },
+        )
+        sent = json.loads(route.calls[0].request.content)
+        assert sent["provider"] == ["tool", "claude"]
+        assert sent["competitors"] == ["x.com"]
+        assert sent["country"] == "us"
+        assert sent["url"] == "https://acme.com"
+        with pytest.raises(ToolError):
+            await mcp.call_tool("ai_visibility_start", {"keywords": ["a"] * 6})
+        with pytest.raises(ToolError):
+            await mcp.call_tool("ai_visibility_start", {"keywords": ["a"], "competitors": ["d.com"] * 6})
+        with pytest.raises(ToolError):
+            await mcp.call_tool("ai_visibility_start", {"keywords": ["a"], "provider": "gemini"})
+    assert route.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_ai_visibility_job_get_and_summary(test_settings, mock_serply):
+    route = mock_serply.get("/v1/geo/jobs/geo_abcdef123456").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "job_id": "geo_abcdef123456",
+                "status": "done",
+                "runs": 2,
+                "completed": 2,
+                "summary": {"visibility_score": 75, "mentioned_in": 2, "cited_in": 1},
+                "results": [],
+            },
+        )
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        result = _unwrap_structured(await mcp.call_tool("ai_visibility_job", {"job_id": "geo_abcdef123456"}))
+    assert route.call_count == 1
+    text = result["text_summary"]
+    assert "done" in text and "2/2 runs" in text and "75/100" in text
+    assert "mentioned_in 2" in text and "cited_in 1" in text
+    assert result["summary"]["visibility_score"] == 75
+
+
+@pytest.mark.asyncio
+async def test_ai_visibility_job_rejects_bad_id(test_settings, mock_serply):
+    route = mock_serply.get(url__regex=r".*/v1/geo/jobs/.*").mock(return_value=httpx.Response(200, json={}))
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        for bad in ("../x", "short", "abc/defghijk"):
+            with pytest.raises(ToolError):
+                await mcp.call_tool("ai_visibility_job", {"job_id": bad})
+    assert route.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_ai_visibility_api_errors_become_tool_errors(test_settings, mock_serply):
+    mock_serply.post("/v1/geo/visibility").mock(
+        return_value=httpx.Response(402, json={"error": {"message": "not enough credits"}})
+    )
+    mock_serply.get("/v1/geo/jobs/geo_abcdef123456").mock(
+        return_value=httpx.Response(404, json={"error": {"message": "unknown job"}})
+    )
+    async with SerplyClient(test_settings) as client:
+        mcp = _make_mcp(test_settings, client)
+        with pytest.raises(ToolError):
+            await mcp.call_tool("ai_visibility_start", {"keywords": ["best crm"]})
+        with pytest.raises(ToolError):
+            await mcp.call_tool("ai_visibility_job", {"job_id": "geo_abcdef123456"})

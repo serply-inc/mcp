@@ -12,7 +12,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that gi
 
 ## What this server provides
 
-Fourteen tools that give AI assistants real-time access to the web:
+Sixteen tools that give AI assistants real-time access to the web:
 
 | Tool | What it does |
 |---|---|
@@ -30,6 +30,8 @@ Fourteen tools that give AI assistants real-time access to the web:
 | `reddit_post` | Reddit — one post's full body as markdown, comments optional |
 | `reddit_post_comments` | Reddit — the full comment thread on a post, nested replies included |
 | `scrape_url` | Fetch and convert any public web page to clean Markdown or raw HTML |
+| `ai_visibility_start` | AI Visibility (GEO) - start a check of whether AI assistants mention or cite your brand (10 credits per provider) |
+| `ai_visibility_job` | AI Visibility (GEO) - poll a job for status, visibility score, and per-answer results (free) |
 
 ---
 
@@ -87,7 +89,7 @@ claude mcp add serply \
 
 ## Tools
 
-Detailed descriptions for all 14 tools. Parameters marked `*` are required.
+Detailed descriptions for all 16 tools. Parameters marked `*` are required.
 
 ---
 
@@ -391,6 +393,37 @@ Prefer `response_type="markdown"` for LLM tasks — it strips navigation, ads, a
 | `response_type` | string | `"markdown"` | Output format: `markdown` (clean text) or `full` (raw HTML) |
 
 **Returns:** `content`, `content_hash` (SHA-256), `content_length`, `url` (final URL after redirects), `response_type`
+
+---
+
+### `ai_visibility_start`
+
+Start an AI Visibility (GEO) check: ask AI assistants the prompts your customers would ask, and see whether your brand or site is mentioned or cited. The tool only starts the job and returns a `job_id` immediately; poll it with `ai_visibility_job`.
+
+**Cost:** 10 credits per provider selected (`all` = 30 credits), regardless of keyword count. Polling is free.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `keywords` * | string[] | — | 1-5 prompts a user would ask an AI assistant (each up to 500 chars) |
+| `provider` | string or string[] | `"all"` | `all`, `tool` (direct model API), `claude` (Claude Code), `codex` (Codex CLI), or a list of those |
+| `brand` | string | — | Brand name to look for in answers |
+| `url` | string | — | Your website URL |
+| `competitors` | string[] | — | Up to 5 competitor domains |
+| `country` | string | — | Two-letter country code |
+
+**Returns:** `job_id`, `status` (`queued`), `providers`, `keywords`, `runs`, `credits`, and a `summary` string with next steps.
+
+---
+
+### `ai_visibility_job`
+
+Get the status and results of an AI Visibility job. Free, and returns immediately. A `tool` job takes about 15 seconds, the `claude` and `codex` engines up to a few minutes; poll every 10-20 seconds.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `job_id` * | string | — | `job_id` from `ai_visibility_start` (8-64 chars: letters, digits, `-`, `_`) |
+
+**Returns:** `status` (`queued`, `running`, `done`, `failed`), `completed`, `runs`, `summary` (`visibility_score` 0-100, `by_provider`, `runs_ok`, `runs_failed`, `mentioned_in`, `cited_in`), `results[]` (provider, keyword, answer, citations, analysis), and a one-line `text_summary`.
 
 ---
 

@@ -22,6 +22,11 @@ from serply_mcp.errors import (
 logger = logging.getLogger(__name__)
 
 _RETRY_STATUS = {429, 500, 502, 503, 504}
+# A POST can start paid work (an AI Visibility job is 10 credits per engine), and
+# a 500/502/504 may come back after the API already started it, so retrying one
+# could start and bill a second job. Only statuses that mean "nothing was done"
+# are retried for POST.
+_POST_RETRY_STATUS = {429, 503}
 
 
 class SerplyClient:
@@ -105,7 +110,7 @@ class SerplyClient:
                 },
             )
 
-            if resp.status_code == 200:
+            if resp.status_code in (200, 202):
                 # /v1/request answers with the scraped page as a raw body under
                 # content-type: text/html, not the JSON envelope every other
                 # endpoint uses. Without this branch resp.json() raises
@@ -149,7 +154,8 @@ class SerplyClient:
                 code = None
 
             # Retry on transient errors with exponential backoff + jitter
-            if resp.status_code in _RETRY_STATUS and attempt < max_attempts - 1:
+            retry_status = _RETRY_STATUS if method == "GET" else _POST_RETRY_STATUS
+            if resp.status_code in retry_status and attempt < max_attempts - 1:
                 delay = (0.5 * (2 ** attempt)) + random.uniform(0, 0.5)
                 logger.warning("retrying after %s (attempt %d)", resp.status_code, attempt + 1)
                 await asyncio.sleep(delay)
